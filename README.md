@@ -4,6 +4,11 @@ Changes the cash and the owned clothing of your multiplayer character in
 [Saints Reborn](https://github.com/whompay/SaintsReborn). Not made by or
 connected to the Saints Reborn project, Volition or Deep Silver.
 
+## Download
+
+Get `MpCharacterEditor.exe` from the Releases page of this repository, or build
+it yourself with `build.bat` (see Build below).
+
 ## Use
 
 1. Close Saints Reborn.
@@ -59,3 +64,13 @@ program contains no game data.
 ## Build
 
 Run `build.bat`. It uses the C# compiler that comes with Windows.
+
+## Fair play
+
+This edits a character used in public and ranked matches. As far as is known,
+multiplayer cash only buys clothing, so it gives no advantage in a match. If you
+play with others, be open about using it.
+
+## License
+
+MIT, see `LICENSE`.
