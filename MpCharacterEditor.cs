@@ -1,6 +1,7 @@
-// Multiplayer character editor for Saints Reborn (unofficial).
+// Save editor for Saints Reborn (unofficial), Windows version.
 //
-// Edits the multiplayer character file the game keeps at
+// Story saves (game.dat) are handled in Core.cs. This file has the window and
+// the multiplayer character file the game keeps at
 //   dist\game\545107D1\profile\<player name>\storage\3_MPStorage
 // (27,724 bytes, big-endian):
 //   0x0004  u32  cash in cents
@@ -12,12 +13,15 @@
 // customization_stores.xtbl and US_Strings.txt inside misc.vpp_xbox2); nothing
 // from the game is included in this program.
 //
+// The Mac version (mac/) has the same features; change both together.
+//
 // Build: build.bat (uses the C# compiler that comes with Windows).
 
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
@@ -26,104 +30,6 @@ using System.Xml;
 
 namespace MpCharacterEditor
 {
-    static class Be
-    {
-        public static uint U32(byte[] d, int o)
-        {
-            return ((uint)d[o] << 24) | ((uint)d[o + 1] << 16) | ((uint)d[o + 2] << 8) | d[o + 3];
-        }
-        public static void Put(byte[] d, int o, uint v)
-        {
-            d[o] = (byte)(v >> 24); d[o + 1] = (byte)(v >> 16); d[o + 2] = (byte)(v >> 8); d[o + 3] = (byte)v;
-        }
-    }
-
-    // Saints Row (Xbox 360) packfile, version 3. Sections are aligned to 2048
-    // bytes; flags at 0x14C: bit 0 compressed, bit 1 condensed (one zlib
-    // stream for all files).
-    class Packfile
-    {
-        class Entry { public string Name; public int At, Size, StoredSize; }
-        const int Align = 2048;
-        readonly byte[] data;
-        readonly bool compressed, condensed;
-        readonly int dataAt;
-        readonly byte[] blob;
-        readonly List<Entry> entries = new List<Entry>();
-
-        static int Up(long x) { return (int)((x + Align - 1) & ~(long)(Align - 1)); }
-
-        public Packfile(string path)
-        {
-            data = File.ReadAllBytes(path);
-            if (data.Length < 0x800 || Be.U32(data, 0) != 0x51890ACE || Be.U32(data, 4) != 3)
-                throw new InvalidDataException(Path.GetFileName(path) + " is not a Saints Row packfile.");
-            uint flags = Be.U32(data, 0x14C);
-            compressed = (flags & 1) != 0;
-            condensed = (flags & 2) != 0;
-            int count = (int)Be.U32(data, 0x154);
-            int namesAt = Up(0x800 + (long)Be.U32(data, 0x15C));
-            dataAt = Up(namesAt + (long)Be.U32(data, 0x160));
-            int stored = dataAt;
-            for (int i = 0; i < count; i++)
-            {
-                int e = 0x800 + i * 28;
-                int nameAt = namesAt + (int)Be.U32(data, e);
-                int end = nameAt;
-                while (end < data.Length && data[end] != 0) end++;
-                Entry entry = new Entry();
-                entry.Name = Encoding.ASCII.GetString(data, nameAt, end - nameAt);
-                entry.Size = (int)Be.U32(data, e + 16);
-                entry.StoredSize = (int)Be.U32(data, e + 20);
-                if (compressed && !condensed) { entry.At = stored; stored = Up(stored + (long)entry.StoredSize); }
-                else entry.At = (int)Be.U32(data, e + 8);
-                entries.Add(entry);
-            }
-            if (condensed)
-            {
-                int blobSize = (int)Be.U32(data, 0x164);
-                blob = compressed ? Inflate(data, dataAt, (int)Be.U32(data, 0x168), blobSize) : Slice(data, dataAt, blobSize);
-            }
-        }
-
-        static byte[] Slice(byte[] src, int at, int size)
-        {
-            byte[] r = new byte[size];
-            Buffer.BlockCopy(src, at, r, 0, size);
-            return r;
-        }
-
-        // zlib stream: 2-byte header, then deflate data.
-        static byte[] Inflate(byte[] src, int at, int storedSize, int size)
-        {
-            byte[] r = new byte[size];
-            using (MemoryStream ms = new MemoryStream(src, at + 2, Math.Max(0, storedSize - 2)))
-            using (DeflateStream z = new DeflateStream(ms, CompressionMode.Decompress))
-            {
-                int got = 0;
-                while (got < size)
-                {
-                    int n = z.Read(r, got, size - got);
-                    if (n <= 0) break;
-                    got += n;
-                }
-            }
-            return r;
-        }
-
-        public byte[] Read(string name)
-        {
-            foreach (Entry e in entries)
-            {
-                if (!string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase)) continue;
-                if (condensed) return Slice(blob, e.At, e.Size);
-                if (compressed) return Inflate(data, e.At, e.StoredSize, e.Size);
-                return Slice(data, dataAt + e.At, e.Size);
-            }
-            throw new FileNotFoundException(name + " was not found in the packfile.");
-        }
-    }
-
     class Variant { public int Id; public string Name, Title; }
 
     class Item
@@ -146,20 +52,13 @@ namespace MpCharacterEditor
     {
         public readonly Dictionary<int, Item> Items = new Dictionary<int, Item>();
         public readonly List<Pair> Store = new List<Pair>();   // sold in multiplayer
-        readonly Dictionary<string, string> strings = new Dictionary<string, string>();
+        readonly Dictionary<string, string> strings;
         const string MpStore = "Multiplayer Purchase Clothing";
 
-        public Tables(string distFolder)
+        public Tables(GameData game)
         {
-            Packfile pack = new Packfile(Path.Combine(distFolder, @"game\packfiles\misc.vpp_xbox2"));
-
-            string text = Encoding.Unicode.GetString(pack.Read("US_Strings.txt"));
-            foreach (string raw in text.Split('\n'))
-            {
-                string line = raw.Trim('\r', '﻿', ' ');
-                int eq = line.IndexOf('=');
-                if (eq > 0) strings[line.Substring(0, eq).Trim()] = line.Substring(eq + 1).Trim();
-            }
+            Packfile pack = game.Pack;
+            strings = game.Strings;
 
             Dictionary<string, Item> byName = new Dictionary<string, Item>();
             XmlDocument doc = Load(pack.Read("customization_items.xtbl"));
@@ -377,16 +276,164 @@ namespace MpCharacterEditor
                     if (File.Exists(Path.Combine(d, @"storage\3_MPStorage"))) names.Add(Path.GetFileName(d));
             return names;
         }
+        // Story saves (game.dat), newest first.
+        public static List<string> StorySaves(string dist)
+        {
+            List<string> files = new List<string>();
+            string root = Path.Combine(dist, "game");
+            if (!Directory.Exists(root)) return files;
+            foreach (string profile in Directory.GetDirectories(root))
+            {
+                string slots = Path.Combine(profile, @"545107D1\00000001");
+                if (Path.GetFileName(profile).Length != 16 || !Directory.Exists(slots)) continue;
+                foreach (string slot in Directory.GetDirectories(slots))
+                    if (File.Exists(Path.Combine(slot, "game.dat"))) files.Add(Path.Combine(slot, "game.dat"));
+            }
+            files.Sort(delegate(string a, string b) { return File.GetLastWriteTime(b).CompareTo(File.GetLastWriteTime(a)); });
+            return files;
+        }
         public static string CharacterFile(string dist, string player)
         {
             return Path.Combine(dist, @"game\545107D1\profile\" + player + @"\storage\3_MPStorage");
         }
     }
 
+    // The weapon wheel, drawn here (no game artwork): eight slots around a
+    // stick, and four quick slots around a d-pad.
+    class WheelPanel : Panel
+    {
+        public readonly string[] Labels = new string[8];
+        public readonly bool[] Filled = new bool[8];
+        public readonly double[] Ammo = new double[8];   // 0..1, below 0 = no ammo arc
+        public readonly string[] Quick = new string[4];
+        public int Selected = 2;
+        public event Action<int> SlotClicked, QuickClicked;
+
+        public WheelPanel()
+        {
+            DoubleBuffered = true; ResizeRedraw = true;
+            for (int i = 0; i < 8; i++) { Labels[i] = GameData.SlotNames[i]; Ammo[i] = -1; }
+        }
+
+        float Side { get { return Math.Max(40, Math.Min(ClientSize.Width, ClientSize.Height)); } }
+        PointF Origin { get { return new PointF((ClientSize.Width - Side) / 2f, (ClientSize.Height - Side) / 2f); } }
+        PointF SlotCentre(int i)
+        {
+            double angle = i * Math.PI / 4 - Math.PI / 2;
+            return new PointF(Origin.X + Side * 0.42f + Side * 0.30f * (float)Math.Cos(angle), Origin.Y + Side * 0.44f + Side * 0.30f * (float)Math.Sin(angle));
+        }
+        PointF QuickCentre(int i)
+        {
+            int[] dx = { 0, 1, 0, -1 }, dy = { -1, 0, 1, 0 };
+            return new PointF(Origin.X + Side * 0.81f + dx[i] * Side * 0.115f, Origin.Y + Side * 0.81f + dy[i] * Side * 0.115f);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+            g.Clear(BackColor);
+            float side = Side;
+            RectangleF area = new RectangleF(Origin.X, Origin.Y, side, side);
+            using (LinearGradientBrush back = new LinearGradientBrush(area, Color.FromArgb(115, 128, 219), Color.FromArgb(148, 158, 230), 90f))
+                g.FillRectangle(back, area);
+            for (int i = 0; i < 8; i++) DrawSlot(g, SlotCentre(i), side * 0.165f, Labels[i], Filled[i], Ammo[i], i == Selected && i != 0);
+            for (int i = 0; i < 4; i++) DrawSlot(g, QuickCentre(i), side * 0.11f, Quick[i] ?? "", Quick[i] != null, -1, false);
+
+            PointF c = new PointF(Origin.X + side * 0.42f, Origin.Y + side * 0.44f);
+            float d = side * 0.13f;
+            RectangleF stick = new RectangleF(c.X - d / 2, c.Y - d / 2, d, d);
+            using (LinearGradientBrush b = new LinearGradientBrush(stick, Color.FromArgb(140, 140, 140), Color.FromArgb(56, 56, 56), 90f)) g.FillEllipse(b, stick);
+            using (Pen p = new Pen(Color.FromArgb(230, 0, 0, 0), 5f)) g.DrawEllipse(p, stick);
+            DrawText(g, "LS", stick, side * 0.036f, Color.FromArgb(230, 230, 230));
+
+            PointF pad = new PointF(Origin.X + side * 0.81f, Origin.Y + side * 0.81f);
+            float arm = side * 0.035f, thick = side * 0.022f;
+            using (SolidBrush b = new SolidBrush(Color.FromArgb(89, 89, 89)))
+            {
+                g.FillRectangle(b, pad.X - arm, pad.Y - thick / 2, arm * 2, thick);
+                g.FillRectangle(b, pad.X - thick / 2, pad.Y - arm, thick, arm * 2);
+            }
+        }
+
+        void DrawSlot(Graphics g, PointF c, float size, string label, bool filled, double ammo, bool selected)
+        {
+            RectangleF r = new RectangleF(c.X - size / 2, c.Y - size / 2, size, size);
+            if (selected)
+                using (Pen glow = new Pen(Color.FromArgb(150, 115, 184, 255), size * 0.07f))
+                    g.DrawEllipse(glow, RectangleF.Inflate(r, size * 0.07f, size * 0.07f));
+            using (GraphicsPath path = new GraphicsPath())
+            {
+                path.AddEllipse(r);
+                using (PathGradientBrush fill = new PathGradientBrush(path))
+                {
+                    fill.CenterColor = Color.FromArgb(107, 120, 204);
+                    fill.SurroundColors = new Color[] { Color.FromArgb(77, 87, 168) };
+                    g.FillEllipse(fill, r);
+                }
+            }
+            using (Pen rim = new Pen(Color.FromArgb(235, 0, 0, 0), size * 0.08f)) g.DrawEllipse(rim, r);
+            if (ammo >= 0)
+                using (Pen arc = new Pen(Color.FromArgb(255, 140, 20), size * 0.07f))
+                    g.DrawArc(arc, r, 100f, (float)(115.2 * Math.Max(0.04, Math.Min(1.0, ammo))));
+            DrawText(g, label, RectangleF.Inflate(r, -size * 0.07f, -size * 0.07f), Math.Max(7f, size * 0.105f),
+                     filled ? Color.White : Color.FromArgb(140, 255, 255, 255));
+        }
+
+        static void DrawText(Graphics g, string text, RectangleF r, float size, Color colour)
+        {
+            using (Font f = new Font("Segoe UI", size, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (StringFormat sf = new StringFormat())
+            using (SolidBrush b = new SolidBrush(colour))
+            {
+                sf.Alignment = StringAlignment.Center; sf.LineAlignment = StringAlignment.Center;
+                g.DrawString(text, f, b, r, sf);
+            }
+        }
+
+        static bool Inside(PointF c, float size, Point p)
+        {
+            float dx = p.X - c.X, dy = p.Y - c.Y;
+            return dx * dx + dy * dy <= size * size / 4;
+        }
+        protected override void OnMouseClick(MouseEventArgs e)
+        {
+            base.OnMouseClick(e);
+            for (int i = 1; i < 8; i++)
+                if (Inside(SlotCentre(i), Side * 0.165f, e.Location)) { if (SlotClicked != null) SlotClicked(i); return; }
+            for (int i = 0; i < 4; i++)
+                if (Inside(QuickCentre(i), Side * 0.11f, e.Location)) { if (QuickClicked != null) QuickClicked(i); return; }
+        }
+    }
+
     class MainForm : Form
     {
         string dist;
+        GameData game;
         Tables tables;
+
+        // Story save.
+        StorySave story;
+        bool storyDirty;
+        readonly CarriedWeapon[] slots = new CarriedWeapon[8];   // one weapon per wheel slot; 0 is the fists
+        readonly List<CarriedWeapon> extras = new List<CarriedWeapon>();
+        readonly string[] quick = new string[4];
+        readonly List<string> extraFood = new List<string>();
+        readonly List<string> storyFiles = new List<string>();
+        readonly TabControl sections = new TabControl(), storyTabs = new TabControl();
+        readonly ComboBox storyBox = new ComboBox(), ownerBox = new ComboBox();
+        readonly Button storySave = new Button(), storyReload = new Button(), storyFolder = new Button();
+        readonly NumericUpDown storyCash = new NumericUpDown(), respectBox = new NumericUpDown();
+        readonly NumericUpDown loadedBox = new NumericUpDown(), spareBox = new NumericUpDown();
+        readonly Label respectNote = new Label(), ammoTitle = new Label(), stashNote = new Label(), hoodNote = new Label();
+        readonly Button fillAmmo = new Button();
+        readonly WheelPanel wheel = new WheelPanel();
+        readonly CheckedListBox stashList = new CheckedListBox(), homieList = new CheckedListBox();
+        readonly ListView hoodList = new ListView(), cheatList = new ListView();
+        readonly TextBox cheatSearch = new TextBox();
+
+        // Online character.
         Character character;
         readonly HashSet<long> owned = new HashSet<long>();
         readonly HashSet<long> worn = new HashSet<long>();
@@ -409,9 +456,9 @@ namespace MpCharacterEditor
 
         public MainForm()
         {
-            Text = "Saints Reborn - Multiplayer Character Editor (unofficial)";
+            Text = "Saints Reborn - Save Editor (unofficial)";
             Font = new Font("Segoe UI", 9f);
-            ClientSize = new Size(860, 600);
+            ClientSize = new Size(900, 680);
             MinimumSize = new Size(700, 420);
             StartPosition = FormStartPosition.CenterScreen;
 
@@ -461,12 +508,17 @@ namespace MpCharacterEditor
             tabs.TabPages.Add(itemsPage); tabs.TabPages.Add(wornPage);
 
             status.Items.Add(statusText);
-            Controls.Add(tabs); Controls.Add(top); Controls.Add(status);
+            TabPage onlinePage = new TabPage("Online character");
+            onlinePage.Controls.Add(tabs); onlinePage.Controls.Add(top);
+            sections.Dock = DockStyle.Fill;
+            sections.TabPages.Add(BuildStoryPage()); sections.TabPages.Add(onlinePage);
+            sections.SelectedIndexChanged += delegate { ShowStatus(); };
+            Controls.Add(sections); Controls.Add(status);
 
             Shown += delegate { Start(); };
             FormClosing += delegate(object s, FormClosingEventArgs e)
             {
-                if (dirty && MessageBox.Show(this, "You have changes that are not saved. Close anyway?", Text,
+                if ((dirty || storyDirty) && MessageBox.Show(this, "You have changes that are not saved. Close anyway?", Text,
                         MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.No) e.Cancel = true;
             };
         }
@@ -526,7 +578,8 @@ namespace MpCharacterEditor
             Cursor = Cursors.WaitCursor;
             try
             {
-                tables = new Tables(dist);
+                game = new GameData(dist);
+                tables = new Tables(game);
                 Game.Remember(dist);
             }
             catch (Exception ex)
@@ -537,6 +590,7 @@ namespace MpCharacterEditor
                 return;
             }
             Cursor = Cursors.Default;
+            LoadStoryList();
 
             filling = true;
             playerBox.Items.Clear();
@@ -560,6 +614,403 @@ namespace MpCharacterEditor
             }
             playerBox.SelectedIndex = best;   // loads the character
         }
+
+        // ---- Story save ----
+
+        static Panel Fill(Control body, Control top)
+        {
+            Panel p = new Panel();
+            p.Dock = DockStyle.Fill; body.Dock = DockStyle.Fill;
+            p.Controls.Add(body);
+            if (top != null) p.Controls.Add(top);
+            return p;
+        }
+        static TabPage Page(string title, Control content)
+        {
+            TabPage page = new TabPage(title);
+            page.Controls.Add(content);
+            return page;
+        }
+        static void Number(NumericUpDown box, decimal max, int width)
+        {
+            box.Maximum = max; box.ThousandsSeparator = true; box.Width = width; box.TextAlign = HorizontalAlignment.Right;
+        }
+
+        TabPage BuildStoryPage()
+        {
+            FlowLayoutPanel top = Row();
+            top.Controls.Add(Caption("Save"));
+            storyBox.DropDownStyle = ComboBoxStyle.DropDownList; storyBox.Width = 230;
+            storyBox.SelectedIndexChanged += delegate { if (!filling) LoadStory(); };
+            top.Controls.Add(storyBox);
+            storySave.Text = "Save"; storySave.AutoSize = true; storySave.Click += delegate { SaveStory(); };
+            storyReload.Text = "Reload"; storyReload.AutoSize = true; storyReload.Click += delegate { LoadStoryList(); };
+            storyFolder.Text = "Game folder..."; storyFolder.AutoSize = true;
+            storyFolder.Click += delegate { if (ChooseFolder()) LoadGame(); };
+            top.Controls.Add(storySave); top.Controls.Add(storyReload); top.Controls.Add(storyFolder);
+
+            // Player
+            FlowLayoutPanel player = Row();
+            player.Dock = DockStyle.Fill; player.FlowDirection = FlowDirection.TopDown;
+            FlowLayoutPanel cashRow = Row(), respectRow = Row();
+            cashRow.Controls.Add(Caption("Cash  $"));
+            Number(storyCash, 20000000, 130); storyCash.Increment = 1000;
+            storyCash.ValueChanged += delegate { StoryChanged(); };
+            cashRow.Controls.Add(storyCash);
+            respectRow.Controls.Add(Caption("Respect"));
+            Number(respectBox, 100000000, 130); respectBox.Increment = 100;
+            respectBox.ValueChanged += delegate { StoryChanged(); };
+            respectRow.Controls.Add(respectBox);
+            respectNote.AutoSize = true; respectNote.Margin = new Padding(8, 7, 0, 0);
+            respectRow.Controls.Add(respectNote);
+            player.Controls.Add(cashRow); player.Controls.Add(respectRow);
+
+            // Weapons
+            FlowLayoutPanel ammo = Row();
+            ammo.Dock = DockStyle.Bottom;
+            ammoTitle.AutoSize = true; ammoTitle.Margin = new Padding(6, 7, 12, 0);
+            ammoTitle.Font = new Font(Font, FontStyle.Bold);
+            ammo.Controls.Add(ammoTitle);
+            ammo.Controls.Add(Caption("Loaded"));
+            Number(loadedBox, 0, 70); loadedBox.ValueChanged += delegate { AmmoChanged(); };
+            ammo.Controls.Add(loadedBox);
+            ammo.Controls.Add(Caption("Spare"));
+            Number(spareBox, 0, 80); spareBox.ValueChanged += delegate { AmmoChanged(); };
+            ammo.Controls.Add(spareBox);
+            fillAmmo.Text = "Fill"; fillAmmo.AutoSize = true;
+            fillAmmo.Click += delegate
+            {
+                CarriedWeapon w = slots[wheel.Selected];
+                WeaponInfo info = w == null || game == null ? null : game.Weapon(w.Name);
+                if (info == null) return;
+                w.Clip = (uint)info.Magazine; w.Reserve = (uint)info.MaxRounds;
+                StoryChanged(); ShowWheel();
+            };
+            ammo.Controls.Add(fillAmmo);
+            wheel.BackColor = SystemColors.Control;
+            wheel.SlotClicked += SlotMenu;
+            wheel.QuickClicked += QuickMenu;
+
+            // Crib weapons
+            FlowLayoutPanel stashTop = Row();
+            stashNote.AutoSize = true; stashNote.Margin = new Padding(6, 7, 12, 0);
+            Button stashAll = new Button();
+            stashAll.Text = "Unlock all"; stashAll.AutoSize = true;
+            stashAll.Click += delegate { TickAll(stashList); };
+            stashTop.Controls.Add(stashNote); stashTop.Controls.Add(stashAll);
+            stashList.CheckOnClick = true; stashList.IntegralHeight = false;
+            stashList.ItemCheck += delegate(object s, ItemCheckEventArgs e)
+            {
+                if (filling || story == null) return;
+                story.SetStash(e.Index, e.NewValue == CheckState.Checked);
+                StoryChanged(); ShowCounts();
+            };
+
+            // Neighbourhoods
+            FlowLayoutPanel hoodTop = Row();
+            hoodNote.AutoSize = true; hoodNote.Margin = new Padding(6, 7, 12, 0);
+            hoodTop.Controls.Add(hoodNote);
+            hoodTop.Controls.Add(Caption("Owner of the selected"));
+            ownerBox.DropDownStyle = ComboBoxStyle.DropDownList; ownerBox.Width = 150;
+            foreach (string g in StorySave.Gangs) ownerBox.Items.Add(g);
+            ownerBox.SelectionChangeCommitted += delegate
+            {
+                if (story == null || ownerBox.SelectedIndex < 0) return;
+                foreach (int i in hoodList.SelectedIndices) story.SetOwner(i, (uint)ownerBox.SelectedIndex);
+                StoryChanged(); ShowHoods();
+            };
+            hoodTop.Controls.Add(ownerBox);
+            Button hoodAll = new Button();
+            hoodAll.Text = "Give all to the Saints"; hoodAll.AutoSize = true;
+            hoodAll.Click += delegate
+            {
+                if (story == null) return;
+                for (int i = 0; i < story.Hoods.Count; i++) story.SetOwner(i, 0);
+                StoryChanged(); ShowHoods();
+            };
+            hoodTop.Controls.Add(hoodAll);
+            SetUpList(hoodList, false, "Neighbourhood", 260, "Owner", 200);
+
+            // Homies
+            FlowLayoutPanel homieTop = Row();
+            homieTop.Controls.Add(Caption("Homies you can call on the phone"));
+            Button homieAll = new Button();
+            homieAll.Text = "Unlock all"; homieAll.AutoSize = true; homieAll.Margin = new Padding(12, 3, 3, 3);
+            homieAll.Click += delegate { TickAll(homieList); };
+            homieTop.Controls.Add(homieAll);
+            homieList.CheckOnClick = true; homieList.IntegralHeight = false;
+            homieList.ItemCheck += delegate(object s, ItemCheckEventArgs e)
+            {
+                if (filling || story == null) return;
+                story.SetHomie(e.Index, e.NewValue == CheckState.Checked);
+                StoryChanged();
+            };
+
+            // Cheat codes
+            FlowLayoutPanel cheatTop = Row();
+            cheatTop.Controls.Add(Caption("Dial these on the phone in the game. Nothing here changes your save.   Search"));
+            cheatSearch.Width = 160; cheatSearch.TextChanged += delegate { ShowCheats(); };
+            cheatTop.Controls.Add(cheatSearch);
+            SetUpList(cheatList, false, "Cheat", 320, "Number", 110, "Kind", 180);
+
+            storyTabs.Dock = DockStyle.Fill;
+            storyTabs.TabPages.Add(Page("Player", player));
+            storyTabs.TabPages.Add(Page("Weapons", Fill(wheel, ammo)));
+            storyTabs.TabPages.Add(Page("Crib weapons", Fill(stashList, stashTop)));
+            storyTabs.TabPages.Add(Page("Neighbourhoods", Fill(hoodList, hoodTop)));
+            storyTabs.TabPages.Add(Page("Homies", Fill(homieList, homieTop)));
+            storyTabs.TabPages.Add(Page("Cheat codes", Fill(cheatList, cheatTop)));
+
+            TabPage page = new TabPage("Story save");
+            page.Controls.Add(storyTabs); page.Controls.Add(top);
+            return page;
+        }
+
+        // Testing: which tab a picture shows.
+        public void ShowPage(int section, int storyTab)
+        {
+            sections.SelectedIndex = section;
+            storyTabs.SelectedIndex = storyTab;
+        }
+
+        static string SaveTitle(string file)
+        {
+            // Folder names look like 23@2425788128@2@10_05_26@03_47_57 (date and time at the end).
+            string folder = Path.GetFileName(Path.GetDirectoryName(file));
+            string[] parts = folder.Split('@');
+            return parts.Length >= 5 ? parts[3].Replace('_', '/') + " " + parts[4].Replace('_', ':') : folder;
+        }
+
+        void LoadStoryList()
+        {
+            storyFiles.Clear();
+            if (dist != null) storyFiles.AddRange(Game.StorySaves(dist));
+            filling = true;
+            storyBox.Items.Clear();
+            foreach (string f in storyFiles) storyBox.Items.Add(SaveTitle(f));
+            filling = false;
+            ShowCheats();
+            if (storyFiles.Count == 0)
+            {
+                story = null; storyDirty = false;
+                storySave.Enabled = false;
+                ShowStatus();
+                return;
+            }
+            storyBox.SelectedIndex = 0;   // loads the save
+        }
+
+        void LoadStory()
+        {
+            if (storyBox.SelectedIndex < 0) return;
+            try { story = new StorySave(storyFiles[storyBox.SelectedIndex]); }
+            catch (Exception ex)
+            {
+                story = null;
+                MessageBox.Show(this, "That save could not be read.\n\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            for (int i = 0; i < 8; i++) slots[i] = null;
+            extras.Clear(); extraFood.Clear();
+            foreach (CarriedWeapon w in story.Weapons)
+            {
+                WeaponInfo info = game == null ? null : game.Weapon(w.Name);
+                if (info != null && info.Slot >= 1 && info.Slot <= 7 && slots[info.Slot] == null) slots[info.Slot] = w;
+                else extras.Add(w);
+            }
+            for (int i = 0; i < 4; i++) quick[i] = i < story.Food.Count ? story.Food[i] : null;
+            for (int i = 4; i < story.Food.Count; i++) extraFood.Add(story.Food[i]);
+
+            filling = true;
+            storyCash.Value = Math.Max(0, Math.Min(storyCash.Maximum, story.Cash));
+            respectBox.Value = Math.Min(respectBox.Maximum, story.Respect);
+            respectNote.Text = "Next bar at " + story.RespectNeeded + ".";
+            stashList.Items.Clear();
+            foreach (StashWeapon s in story.Stash)
+            {
+                string name = game == null ? null : game.NameOfHash(s.Hash);
+                stashList.Items.Add(name != null ? game.Title(name) : "Weapon " + s.Hash.ToString("X8"), s.Unlocked);
+            }
+            homieList.Items.Clear();
+            foreach (Homie h in story.Homies)
+            {
+                string title;
+                if (game == null || !game.HomieTitles.TryGetValue(h.Name, out title)) title = h.Name;
+                homieList.Items.Add(title, h.Unlocked);
+            }
+            filling = false;
+            storyDirty = false;
+            storySave.Enabled = true;
+            ShowHoods(); ShowWheel(); ShowCounts(); ShowStatus();
+        }
+
+        void StoryChanged()
+        {
+            if (filling || story == null) return;
+            storyDirty = true;
+            ShowStatus();
+        }
+
+        void TickAll(CheckedListBox list)
+        {
+            for (int i = 0; i < list.Items.Count; i++) list.SetItemChecked(i, true);
+        }
+
+        void ShowCounts()
+        {
+            if (story == null) return;
+            int n = 0;
+            foreach (StashWeapon s in story.Stash) if (s.Unlocked) n++;
+            stashNote.Text = n + " of " + story.Stash.Count + " weapons in the crib's weapon cache";
+        }
+
+        void ShowHoods()
+        {
+            if (story == null) return;
+            List<int> selected = new List<int>();
+            foreach (int i in hoodList.SelectedIndices) selected.Add(i);
+            int saints = 0;
+            hoodList.BeginUpdate();
+            hoodList.Items.Clear();
+            foreach (Neighbourhood h in story.Hoods)
+            {
+                if (h.Owner == 0) saints++;
+                hoodList.Items.Add(new ListViewItem(new string[] { h.Name, h.Owner < StorySave.Gangs.Length ? StorySave.Gangs[h.Owner] : "?" }));
+            }
+            foreach (int i in selected) if (i < hoodList.Items.Count) hoodList.Items[i].Selected = true;
+            hoodList.EndUpdate();
+            hoodNote.Text = saints + " of " + story.Hoods.Count + " held by the Saints";
+        }
+
+        void ShowCheats()
+        {
+            cheatList.BeginUpdate();
+            cheatList.Items.Clear();
+            string search = cheatSearch.Text.Trim().ToLowerInvariant();
+            if (game != null)
+                foreach (CheatInfo c in game.Cheats)
+                    if (search.Length == 0 || (c.Name + " " + c.Category).ToLowerInvariant().IndexOf(search) >= 0)
+                        cheatList.Items.Add(new ListViewItem(new string[] { c.Name, c.Number, c.Category }));
+            cheatList.EndUpdate();
+        }
+
+        // Puts the slots on the wheel and the selected weapon's ammo under it.
+        void ShowWheel()
+        {
+            wheel.Labels[0] = "Fists"; wheel.Filled[0] = true; wheel.Ammo[0] = -1;
+            for (int i = 1; i < 8; i++)
+            {
+                CarriedWeapon w = slots[i];
+                WeaponInfo info = w == null || game == null ? null : game.Weapon(w.Name);
+                wheel.Labels[i] = w == null ? GameData.SlotNames[i] : game != null ? game.Title(w.Name) : w.Name;
+                wheel.Filled[i] = w != null;
+                wheel.Ammo[i] = info != null && info.MaxRounds > 0 ? (double)w.Reserve / info.MaxRounds : -1;
+            }
+            for (int i = 0; i < 4; i++) wheel.Quick[i] = quick[i] == null ? null : game != null ? game.Title(quick[i]) : quick[i];
+            wheel.Invalidate();
+
+            CarriedWeapon sel = slots[wheel.Selected];
+            WeaponInfo selInfo = sel == null || game == null ? null : game.Weapon(sel.Name);
+            bool hasAmmo = selInfo != null && selInfo.MaxRounds > 0;
+            bool was = filling;
+            filling = true;
+            ammoTitle.Text = sel == null ? "Click a slot to choose a weapon. Click a quick slot to choose food."
+                : GameData.SlotNames[wheel.Selected] + ": " + (selInfo != null ? selInfo.Title : sel.Name);
+            loadedBox.Enabled = spareBox.Enabled = fillAmmo.Enabled = hasAmmo;
+            loadedBox.Maximum = hasAmmo ? Math.Max(selInfo.Magazine, (int)sel.Clip) : 0;
+            spareBox.Maximum = hasAmmo ? Math.Max(selInfo.MaxRounds, (int)sel.Reserve) : 0;
+            loadedBox.Value = hasAmmo ? sel.Clip : 0;
+            spareBox.Value = hasAmmo ? sel.Reserve : 0;
+            filling = was;
+        }
+
+        void AmmoChanged()
+        {
+            if (filling || story == null || slots[wheel.Selected] == null) return;
+            slots[wheel.Selected].Clip = (uint)loadedBox.Value;
+            slots[wheel.Selected].Reserve = (uint)spareBox.Value;
+            StoryChanged();
+            ShowWheel();
+        }
+
+        // The drop-down of a wheel slot: the other weapons for that slot, or empty.
+        void SlotMenu(int slot)
+        {
+            if (story == null || game == null) return;
+            wheel.Selected = slot;
+            ShowWheel();
+            ContextMenuStrip menu = new ContextMenuStrip();
+            foreach (WeaponInfo info in game.Choices(slot))
+            {
+                WeaponInfo pick = info;
+                ToolStripMenuItem item = new ToolStripMenuItem(info.Title);
+                item.Checked = slots[slot] != null && string.Equals(slots[slot].Name, info.Name, StringComparison.OrdinalIgnoreCase);
+                item.Click += delegate
+                {
+                    slots[slot] = new CarriedWeapon(pick.Name, (uint)pick.Magazine, (uint)pick.MaxRounds);
+                    StoryChanged(); ShowWheel();
+                };
+                menu.Items.Add(item);
+            }
+            menu.Items.Add(new ToolStripSeparator());
+            ToolStripMenuItem empty = new ToolStripMenuItem("Empty");
+            empty.Checked = slots[slot] == null;
+            empty.Click += delegate { slots[slot] = null; StoryChanged(); ShowWheel(); };
+            menu.Items.Add(empty);
+            menu.Show(Cursor.Position);
+        }
+
+        void QuickMenu(int index)
+        {
+            if (story == null || game == null) return;
+            ContextMenuStrip menu = new ContextMenuStrip();
+            foreach (string food in game.Food)
+            {
+                string pick = food;
+                ToolStripMenuItem item = new ToolStripMenuItem(game.Title(food));
+                item.Checked = quick[index] == food;
+                item.Click += delegate { quick[index] = pick; StoryChanged(); ShowWheel(); };
+                menu.Items.Add(item);
+            }
+            menu.Items.Add(new ToolStripSeparator());
+            ToolStripMenuItem empty = new ToolStripMenuItem("Empty");
+            empty.Checked = quick[index] == null;
+            empty.Click += delegate { quick[index] = null; StoryChanged(); ShowWheel(); };
+            menu.Items.Add(empty);
+            menu.Show(Cursor.Position);
+        }
+
+        void SaveStory()
+        {
+            if (story == null || !GameClosed()) return;
+            story.Cash = storyCash.Value;
+            story.Respect = (uint)respectBox.Value;
+            if (game != null)
+            {
+                story.Weapons = new List<CarriedWeapon>();
+                for (int i = 1; i < 8; i++) if (slots[i] != null) story.Weapons.Add(slots[i]);
+                story.Weapons.AddRange(extras);
+                story.Food = new List<string>();
+                foreach (string f in quick) if (f != null) story.Food.Add(f);
+                story.Food.AddRange(extraFood);
+            }
+            try
+            {
+                string backup = story.Save();
+                int keep = storyBox.SelectedIndex;
+                LoadStory();
+                storyBox.SelectedIndex = keep;
+                MessageBox.Show(this, "Saved.\n\nYour previous save is kept as\n" + Path.GetFileName(backup) +
+                    "\nin the same folder. To undo, delete game.dat and rename that file to game.dat.", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "The save could not be written.\n\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // ---- Online character ----
 
         void LoadCharacter()
         {
@@ -660,6 +1111,12 @@ namespace MpCharacterEditor
 
         void ShowStatus()
         {
+            if (sections.SelectedIndex == 0)
+            {
+                statusText.Text = story == null ? "No story save found. Save the game once, then press Reload."
+                    : (storyDirty ? "Not saved yet   |   " : "") + story.Path;
+                return;
+            }
             if (character == null) return;
             statusText.Text = "Owns " + owned.Count + " of " + rows.Count + " items   |   showing " + itemList.Items.Count +
                 (dirty ? "   |   not saved yet" : "") + "   |   " + character.Path;
@@ -734,7 +1191,9 @@ namespace MpCharacterEditor
         static int Check(string dist, string report)
         {
             StringBuilder sb = new StringBuilder();
-            Tables tables = new Tables(dist);
+            GameData game = new GameData(dist);
+            Tables tables = new Tables(game);
+            sb.AppendLine("weapons " + game.Weapons.Count + ", offered " + game.Offered.Count + ", food " + game.Food.Count + ", cheats " + game.Cheats.Count);
             sb.AppendLine("items " + tables.Items.Count + ", sold in multiplayer " + tables.Store.Count);
             foreach (string player in Game.Players(dist))
             {
@@ -748,9 +1207,44 @@ namespace MpCharacterEditor
             return 0;
         }
 
-        // "--picture <png file>": draws the window to a picture without putting
+        // "--story <game.dat> <report file> [weapon:<name>=<loaded>/<spare>|none] [food=<a,b>] [stash=1] [cash=N]":
+        // reads a story save, applies the changes if any, and writes what it holds, for testing.
+        static int Story(string[] args)
+        {
+            StorySave s = new StorySave(args[1]);
+            bool changed = false;
+            for (int i = 3; i < args.Length; i++)
+            {
+                int eq = args[i].IndexOf('=');
+                if (eq < 0) continue;
+                string key = args[i].Substring(0, eq), value = args[i].Substring(eq + 1);
+                changed = true;
+                if (key == "cash") s.Cash = decimal.Parse(value);
+                else if (key == "food") s.Food = new List<string>(value.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries));
+                else if (key == "stash") for (int k = 0; k < s.Stash.Count; k++) s.SetStash(k, value == "1");
+                else if (key.StartsWith("weapon:"))
+                {
+                    string name = key.Substring(7);
+                    s.Weapons.RemoveAll(delegate(CarriedWeapon w) { return w.Name == name; });
+                    string[] ammo = value.Split('/');
+                    if (ammo.Length == 2) s.Weapons.Add(new CarriedWeapon(name, uint.Parse(ammo[0]), uint.Parse(ammo[1])));
+                }
+            }
+            StringBuilder sb = new StringBuilder();
+            if (changed) sb.AppendLine("saved; previous file kept as " + Path.GetFileName(s.Save()));
+            sb.AppendLine("cash " + s.Cash.ToString("0.00") + ", respect " + s.Respect);
+            foreach (CarriedWeapon w in s.Weapons) sb.AppendLine("weapon " + w.Name + " " + w.Clip + "/" + w.Reserve);
+            sb.AppendLine("food " + string.Join(",", s.Food.ToArray()));
+            int unlocked = 0;
+            foreach (StashWeapon w in s.Stash) if (w.Unlocked) unlocked++;
+            sb.AppendLine("stash " + unlocked + "/" + s.Stash.Count + ", homies " + s.Homies.Count + ", neighbourhoods " + s.Hoods.Count);
+            File.WriteAllText(args[2], sb.ToString());
+            return 0;
+        }
+
+        // "--picture <png file> [section] [story tab]": draws the window to a picture without putting
         // it on screen, for testing.
-        static int Picture(string png)
+        static int Picture(string png, int section, int storyTab)
         {
             MainForm form = new MainForm();
             form.Quiet = true;
@@ -758,6 +1252,8 @@ namespace MpCharacterEditor
             form.StartPosition = FormStartPosition.Manual;
             form.Location = new Point(-30000, -30000);
             form.Show();
+            Application.DoEvents();
+            form.ShowPage(section, storyTab);
             Application.DoEvents();
             using (Bitmap bmp = new Bitmap(form.Width, form.Height))
             {
@@ -779,10 +1275,19 @@ namespace MpCharacterEditor
                 c.Save(c.Cents, c.Owned);
                 return 0;
             }
+            if (args.Length >= 3 && args[0] == "--story") return Story(args);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            if (args.Length == 2 && args[0] == "--picture") return Picture(args[1]);
-            Application.Run(new MainForm());
+            if (args.Length >= 2 && args[0] == "--picture")
+                return Picture(args[1], args.Length > 2 ? int.Parse(args[2]) : 0, args.Length > 3 ? int.Parse(args[3]) : 0);
+            MainForm main = new MainForm();
+            if (args.Length == 3 && args[0] == "--tab")
+            {
+                // Testing: open on a given tab.
+                int section = int.Parse(args[1]), storyTab = int.Parse(args[2]);
+                main.Shown += delegate { main.ShowPage(section, storyTab); };
+            }
+            Application.Run(main);
             return 0;
         }
     }

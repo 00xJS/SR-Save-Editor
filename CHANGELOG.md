@@ -2,12 +2,12 @@
 
 ## 0.2.0
 
-Mac version (`mac/`), a native app.
+Mac version (`mac/`), a native app, and the same new features in the Windows version.
 
 - Story saves: cash, respect, the weapon wheel (weapon per slot, ammo), carried
   food, the crib weapon cache, neighbourhood owners and homies.
 - A searchable list of the game's cheat codes.
-- Online character: cash and owned clothing, as in the Windows version.
+- Online character: cash and owned clothing.
 - Keeps a dated backup on every save and refuses to save while the game is running.
 
 ## 0.1.0

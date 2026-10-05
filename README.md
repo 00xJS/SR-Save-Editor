@@ -4,14 +4,12 @@ Edits your saves in [Saints Reborn](https://github.com/whompay/SaintsReborn),
 on **Mac** or **Windows**. Not made by or connected to the Saints Reborn
 project, Volition or Deep Silver.
 
-| | Mac | Windows |
-|---|---|---|
-| Story save: cash and respect | ✓ | |
-| Story save: weapon wheel, ammo, food | ✓ | |
-| Story save: crib weapon cache | ✓ | |
-| Story save: neighbourhoods and homies | ✓ | |
-| Cheat code list | ✓ | |
-| Online character: cash and owned clothing | ✓ | ✓ |
+Both versions do the same things:
+
+- **Story save:** cash and respect, the weapon wheel (weapon per slot, ammo,
+  food), the crib weapon cache, neighbourhoods and homies.
+- **Cheat codes:** a list of the game's phone cheats.
+- **Online character:** cash and owned clothing.
 
 ## Mac
 
@@ -35,9 +33,12 @@ Needs macOS 13 or later. Building needs the Xcode command line tools.
 2. Run `MpCharacterEditor.exe` (from the Releases page, or build it with
    `build.bat`). Windows may warn that it is from an unknown publisher, because
    the program is not signed.
-3. It finds the game and your character by itself. If it can't, choose the
-   folder that contains `saintsrow.exe` (the `dist` folder).
-4. Change the cash, tick the items you want to own, and press **Save**.
+3. It finds the game by itself. If it can't, choose the folder that contains
+   `saintsrow.exe` (the `dist` folder).
+4. Pick **Story save** or **Online character**, change what you want, and press
+   **Save**.
+
+The **Weapons** tab works the same way as on the Mac: click a slot on the wheel.
 
 Needs Windows 10 or 11. Nothing to install.
 
