@@ -33,17 +33,6 @@ Windows 10 or 11. Nothing to install.
 It does not change what the character is wearing, the body shape, rank or
 statistics. Items the character is wearing can't be unticked.
 
-## Known problems
-
-- Tested on one PC with one install of Saints Reborn (source at `f53b577`).
-- Three Football Jersey styles (Aztec Bird, Mao Design, May Lion) are in the
-  game's multiplayer store table, but the game removes them from the owned list
-  when it loads the character. The editor leaves them out.
-- The game itself sometimes loads a character with no shirt, pants or necklaces
-  after a restart. This happened with Zoot Pants worn with suspenders and a
-  tucked T-Shirt, and does not depend on this editor. Dressing again in the
-  wardrobe and saving fixes it.
-
 ## How it works
 
 The character is the file
