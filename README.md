@@ -1,62 +1,84 @@
-# Multiplayer Character Editor for Saints Reborn (unofficial)
+# Save Editor for Saints Reborn (unofficial)
 
-Changes the cash and the owned clothing of your multiplayer character in
-[Saints Reborn](https://github.com/whompay/SaintsReborn). Not made by or
-connected to the Saints Reborn project, Volition or Deep Silver.
+Edits your saves in [Saints Reborn](https://github.com/whompay/SaintsReborn),
+on **Mac** or **Windows**. Not made by or connected to the Saints Reborn
+project, Volition or Deep Silver.
 
-## Download
+| | Mac | Windows |
+|---|---|---|
+| Story save: cash and respect | ✓ | |
+| Story save: weapon wheel, ammo, food | ✓ | |
+| Story save: crib weapon cache | ✓ | |
+| Story save: neighbourhoods and homies | ✓ | |
+| Cheat code list | ✓ | |
+| Online character: cash and owned clothing | ✓ | ✓ |
 
-Get `MpCharacterEditor.exe` from the Releases page of this repository, or build
-it yourself with `build.bat` (see Build below).
-
-## Use
+## Mac
 
 1. Close Saints Reborn.
-2. Run `MpCharacterEditor.exe`. Windows may warn that it is from an unknown
-   publisher, because the program is not signed.
+2. Open **Saints Reborn Save Editor** (from the Releases page, or build it with
+   `mac/build.sh`). The first time, right-click the app and choose **Open**,
+   because the app is not signed by Apple.
+3. It finds the game in `~/SaintsReborn` by itself. If yours is somewhere else,
+   press **Open…** and choose the `dist` folder.
+4. Pick a screen on the left, change what you want, and press **Save**.
+
+On the **Weapons** screen, click a slot on the wheel to choose the weapon for
+it, and a quick slot to choose food. The ammo for the selected weapon is under
+the wheel.
+
+Needs macOS 13 or later. Building needs the Xcode command line tools.
+
+## Windows
+
+1. Close Saints Reborn.
+2. Run `MpCharacterEditor.exe` (from the Releases page, or build it with
+   `build.bat`). Windows may warn that it is from an unknown publisher, because
+   the program is not signed.
 3. It finds the game and your character by itself. If it can't, choose the
    folder that contains `saintsrow.exe` (the `dist` folder).
 4. Change the cash, tick the items you want to own, and press **Save**.
 
-Every save keeps your previous character next to the file, as
-`3_MPStorage.<date>-<time>.bak`. **Restore backup...** puts one of them back.
+Needs Windows 10 or 11. Nothing to install.
 
-No character in the list? In the game, open MULTIPLAYER, change something in the
-wardrobe and save, then start the editor again.
+## Backups
 
-## What it needs
+Every save keeps the previous file next to it, as `game.dat.<date>-<time>.bak`
+or `3_MPStorage.<date>-<time>.bak`. To go back, delete the new file and remove
+the date and `.bak` from the name of the old one.
 
-Windows 10 or 11. Nothing to install.
-
-## What it does not do
-
-It does not change what the character is wearing, the body shape, rank or
-statistics. Items the character is wearing can't be unticked.
+No online character in the list? In the game, open MULTIPLAYER, change
+something in the wardrobe and save, then start the editor again.
 
 ## How it works
 
-The character is the file
-`dist\game\545107D1\profile\<player name>\storage\3_MPStorage` (27,724 bytes,
-big-endian):
+Names of weapons, food, clothing and cheats are read from your own game files
+(`misc.vpp_xbox2`); the editor contains no game data or artwork.
 
-| Offset | What |
+The story save is
+`dist/game/<profile>/545107D1/00000001/<slot>/game.dat` and the online
+character is `dist/game/545107D1/profile/<player name>/storage/3_MPStorage`.
+Both are big-endian.
+
+| Story save | What |
 |---|---|
-| `0x0004` | cash in cents (32 bits) |
-| `0x0010` | number of body sliders, then (value, index) pairs |
+| `0x0090` | respect |
+| `0x00A0` | cash in cents |
+| `0x0144` | carried weapons: count, pointer to 16-byte records (name, count, loaded, spare) |
+| `0x0240` | carried food: count, pointer to names |
+| `0x6E88` | homies: count, pointer to 12-byte records (name, 0, unlocked) |
+| `0x6E90` | neighbourhoods: count, pointer to 12-byte records (name, owner, flags) |
+| `0x6F8C` | crib weapon cache: count, pointer to 8-byte records (name hash, flags) |
+
+| Online character | What |
+|---|---|
+| `0x0004` | cash in cents |
 | `0x0414` | number of worn items, then 16-byte records: item id, variant id, slot, wear option |
 | `0x0C18` | number of owned items, then 12-byte records: item id, variant id, 0 (room for 2048) |
 
-Item names are read from your own game files (`customization_items.xtbl`,
-`customization_stores.xtbl` and `US_Strings.txt` inside `misc.vpp_xbox2`); the
-program contains no game data.
-
-## Build
-
-Run `build.bat`. It uses the C# compiler that comes with Windows.
-
 ## Fair play
 
-This edits a character used in public and ranked matches. As far as is known,
+The online character is used in public and ranked matches. As far as is known,
 multiplayer cash only buys clothing, so it gives no advantage in a match. If you
 play with others, be open about using it.
 

@@ -1,3 +1,7 @@
 # Built program: attach it to a release instead of committing it
 *.exe
 *.pdb
+
+# Mac build output
+mac/build/
+.DS_Store
