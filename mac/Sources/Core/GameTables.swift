@@ -19,6 +19,8 @@ final class GameTables {
     private(set) var homieTitles: [String: String] = [:]
     private var hashed: [UInt32: String] = [:]
     let pack: Packfile
+    let packfilesFolder: URL
+    private(set) lazy var icons: GameIcons? = GameIcons(tables: self, packfiles: packfilesFolder)
 
     static func find(near url: URL?) -> URL? {
         var tries: [URL] = []
@@ -36,6 +38,7 @@ final class GameTables {
 
     init(packfile: URL) throws {
         pack = try Packfile(url: packfile)
+        packfilesFolder = packfile.deletingLastPathComponent()
         if let d = pack.read("US_Strings.txt"), let text = String(data: d, encoding: .utf16) {
             for raw in text.split(whereSeparator: { $0 == "\n" || $0 == "\r\n" }) {
                 let line = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\r\u{FEFF} "))

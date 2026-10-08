@@ -4,7 +4,7 @@ import Foundation
 let args = CommandLine.arguments
 guard args.count >= 3 else {
     print("""
-    usage: sredit info <game.dat> | mp <3_MPStorage>
+    usage: sredit info <game.dat> | mp <3_MPStorage> | backups <file> | restore <file> <backup>
            sredit set <game.dat> cash=N respect=N hood:<name|all>=<0-3> contact:<name|all>=<0|1>
                   weapon:<name>=<magazine>/<spare>|none food=<name,name,...> stash:<name|all>=<0|1>
     """)
@@ -12,6 +12,22 @@ guard args.count >= 3 else {
 }
 do {
     let file = URL(fileURLWithPath: args[2])
+    if args[1] == "icon", args.count >= 5 {
+        // sredit icon <any file in dist> <item> <out.rgba>: writes the raw RGBA of an icon, for testing.
+        guard let t = GameTables.find(near: file).flatMap({ try? GameTables(packfile: $0) }), let img = t.icons?.icon(for: args[3]) else { print("no icon"); exit(1) }
+        try Data(img.pixels).write(to: URL(fileURLWithPath: args[4]))
+        print("\(img.width)x\(img.height)")
+        exit(0)
+    }
+    if args[1] == "restore", args.count >= 4 {
+        // sredit restore <file> <backup>: puts a backup back, keeping the current file as a backup.
+        print("kept", try Backups.restore(URL(fileURLWithPath: args[3]), to: file).lastPathComponent)
+        exit(0)
+    }
+    if args[1] == "backups" {
+        for b in Backups.list(for: file) { print(b.lastPathComponent) }
+        exit(0)
+    }
     if args[1] == "mp" {
         let c = try MpCharacter(url: file)
         print(String(format: "cash $%.2f | owned %d | wearing %d", Double(c.cents) / 100, c.owned.count, c.wearing.count))

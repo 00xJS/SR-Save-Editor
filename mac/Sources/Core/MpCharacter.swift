@@ -100,11 +100,7 @@ final class MpCharacter {
         for (k, p) in owned.enumerated() {
             put(Self.ownedAt + 12 * k, UInt32(p.item)); put(Self.ownedAt + 12 * k + 4, UInt32(p.variant))
         }
-        let stamp = DateFormatter(); stamp.dateFormat = "yyyyMMdd-HHmmss"
-        let folder = url.deletingLastPathComponent(), base = "3_MPStorage.\(stamp.string(from: Date()))"
-        var backup = folder.appendingPathComponent(base + ".bak"), n = 2
-        while FileManager.default.fileExists(atPath: backup.path) { backup = folder.appendingPathComponent("\(base)-\(n).bak"); n += 1 }
-        try FileManager.default.copyItem(at: url, to: backup)
+        let backup = try Backups.keep(url)
         try Data(data).write(to: url, options: .atomic)
         return backup
     }

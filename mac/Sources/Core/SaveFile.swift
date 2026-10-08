@@ -157,12 +157,34 @@ final class SinglePlayerSave {
     /// Writes the save, keeping the previous file next to it as game.dat.<date>-<time>.bak.
     func write() throws -> URL {
         writeInventory()
+        let backup = try Backups.keep(url)
+        try data.write(to: url, options: .atomic)
+        return backup
+    }
+}
+
+/// Dated copies of a file next to it: <name>.<date>-<time>.bak.
+enum Backups {
+    static func keep(_ url: URL) throws -> URL {
         let stamp = DateFormatter(); stamp.dateFormat = "yyyyMMdd-HHmmss"
-        let folder = url.deletingLastPathComponent(), base = "game.dat.\(stamp.string(from: Date()))"
+        let folder = url.deletingLastPathComponent(), base = "\(url.lastPathComponent).\(stamp.string(from: Date()))"
         var backup = folder.appendingPathComponent(base + ".bak"), n = 2
         while FileManager.default.fileExists(atPath: backup.path) { backup = folder.appendingPathComponent("\(base)-\(n).bak"); n += 1 }
         try FileManager.default.copyItem(at: url, to: backup)
-        try data.write(to: url, options: .atomic)
         return backup
+    }
+    /// The backups of a file, newest first.
+    static func list(for url: URL) -> [URL] {
+        let folder = url.deletingLastPathComponent(), prefix = url.lastPathComponent + "."
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        func date(_ u: URL) -> Date { (try? u.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast }
+        return files.filter { $0.lastPathComponent.hasPrefix(prefix) && $0.pathExtension == "bak" }.sorted { date($0) > date($1) }
+    }
+    /// Puts a backup in place of the file; the file as it is now is kept as a backup first.
+    static func restore(_ backup: URL, to url: URL) throws -> URL {
+        let kept = try keep(url)
+        let data = try Data(contentsOf: backup)
+        try data.write(to: url, options: .atomic)
+        return kept
     }
 }

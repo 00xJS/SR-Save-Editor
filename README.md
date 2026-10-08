@@ -23,7 +23,7 @@ Both versions do the same things:
 
 On the **Weapons** screen, click a slot on the wheel to choose the weapon for
 it, and a quick slot to choose food. The ammo for the selected weapon is under
-the wheel.
+the wheel. **Restore backup…** puts an earlier copy of the file back.
 
 Needs macOS 13 or later. Building needs the Xcode command line tools.
 
@@ -45,16 +45,17 @@ Needs Windows 10 or 11. Nothing to install.
 ## Backups
 
 Every save keeps the previous file next to it, as `game.dat.<date>-<time>.bak`
-or `3_MPStorage.<date>-<time>.bak`. To go back, delete the new file and remove
-the date and `.bak` from the name of the old one.
+or `3_MPStorage.<date>-<time>.bak`. **Restore backup…** puts one of them back
+(and keeps the file you had as another backup).
 
 No online character in the list? In the game, open MULTIPLAYER, change
 something in the wardrobe and save, then start the editor again.
 
 ## How it works
 
-Names of weapons, food, clothing and cheats are read from your own game files
-(`misc.vpp_xbox2`); the editor contains no game data or artwork.
+Names of weapons, food, clothing and cheats, and the icons on the weapon wheel,
+are read from your own game files (`misc.vpp_xbox2` and `pegfiles.vpp_xbox2`);
+the editor contains no game data or artwork. See `THIRD_PARTY_NOTICES.md`.
 
 The story save is
 `dist/game/<profile>/545107D1/00000001/<slot>/game.dat` and the online

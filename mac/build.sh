@@ -15,7 +15,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>io.github.00xjs.saintsreborn-save-editor</string>
   <key>CFBundleExecutable</key><string>SaveEditor</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>2.0</string>
+  <key>CFBundleShortVersionString</key><string>0.3.0</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

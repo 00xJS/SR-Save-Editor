@@ -111,6 +111,20 @@ final class Editor: ObservableObject {
         return p.terminationStatus == 0
     }
 
+    /// Puts an earlier copy of the story save or the online character back.
+    func restore(_ backup: URL, online: Bool) {
+        if Self.gameRunning { status = "Saints Reborn is running. Close the game first."; return }
+        do {
+            if online, let c = character {
+                let kept = try Backups.restore(backup, to: c.url); openPlayer(playerName)
+                status = "Restored \(backup.lastPathComponent). The character you had is kept as \(kept.lastPathComponent)."
+            } else if let s = save {
+                let kept = try Backups.restore(backup, to: s.url); open(s.url)
+                status = "Restored \(backup.lastPathComponent). The save you had is kept as \(kept.lastPathComponent)."
+            }
+        } catch { status = "Could not restore: \(error.localizedDescription)" }
+    }
+
     func write() {
         if Self.gameRunning { status = "Saints Reborn is running. Close the game first, then save."; return }
         var notes: [String] = []
@@ -139,10 +153,30 @@ final class Editor: ObservableObject {
     }
 }
 
-// MARK: - Weapon wheel (drawn here; no game artwork)
+// MARK: - Weapon wheel (drawn here; icons come from the player's own game files)
+
+final class IconCache {
+    static let shared = IconCache()
+    private var images: [String: NSImage?] = [:]
+    func image(_ item: String, _ tables: GameTables?) -> NSImage? {
+        if let cached = images[item] { return cached }
+        var made: NSImage? = nil
+        if let img = tables?.icons?.icon(for: item) {
+            let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: img.width, pixelsHigh: img.height, bitsPerSample: 8, samplesPerPixel: 4,
+                                       hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: img.width * 4, bitsPerPixel: 32)
+            if let rep, let data = rep.bitmapData {
+                img.pixels.withUnsafeBufferPointer { data.update(from: $0.baseAddress!, count: img.pixels.count) }
+                let image = NSImage(size: NSSize(width: img.width, height: img.height)); image.addRepresentation(rep); made = image
+            }
+        }
+        images[item] = made
+        return made
+    }
+}
 
 struct WheelSlot: View {
     let label: String
+    var icon: NSImage? = nil
     let ammo: Double?      // 0...1, nil = no ammo arc
     let selected: Bool
     let filled: Bool
@@ -158,9 +192,14 @@ struct WheelSlot: View {
                             style: StrokeStyle(lineWidth: size * 0.07, lineCap: .butt))
                     .rotationEffect(.degrees(100))
             }
-            Text(label).font(.system(size: max(9, size * 0.125), weight: .semibold, design: .rounded)).foregroundColor(.white.opacity(filled ? 1 : 0.55))
-                .multilineTextAlignment(.center).lineLimit(3).minimumScaleFactor(0.6).padding(size * 0.14)
-                .shadow(color: .black.opacity(0.7), radius: 1, x: 0, y: 1)
+            if let icon {
+                Image(nsImage: icon).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                    .frame(width: size * 0.72, height: size * 0.55).shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
+            } else {
+                Text(label).font(.system(size: max(9, size * 0.125), weight: .semibold, design: .rounded)).foregroundColor(.white.opacity(filled ? 1 : 0.55))
+                    .multilineTextAlignment(.center).lineLimit(3).minimumScaleFactor(0.6).padding(size * 0.14)
+                    .shadow(color: .black.opacity(0.7), radius: 1, x: 0, y: 1)
+            }
         }
         .frame(width: size, height: size)
         .contentShape(Circle())
@@ -170,6 +209,7 @@ struct WheelSlot: View {
 struct ChoiceList: View {
     let title: String
     let choices: [(id: String, title: String)]
+    var tables: GameTables? = nil
     let current: String?
     let pick: (String?) -> Void
     var body: some View {
@@ -177,7 +217,11 @@ struct ChoiceList: View {
             Text(title).font(.headline).padding(.bottom, 4)
             ForEach(choices, id: \.id) { c in
                 Button { pick(c.id) } label: {
-                    HStack { Image(systemName: c.id == current ? "checkmark" : "").frame(width: 14); Text(c.title); Spacer() }.contentShape(Rectangle())
+                    HStack {
+                        Image(systemName: c.id == current ? "checkmark" : "").frame(width: 14)
+                        if let img = IconCache.shared.image(c.id, tables) { Image(nsImage: img).resizable().interpolation(.high).aspectRatio(contentMode: .fit).frame(width: 42, height: 32) }
+                        Text(c.title); Spacer()
+                    }.contentShape(Rectangle())
                 }.buttonStyle(.plain).padding(.vertical, 3)
             }
             Divider().padding(.vertical, 3)
@@ -225,17 +269,18 @@ struct WeaponWheel: View {
 
     @ViewBuilder private func slot(_ i: Int, size: CGFloat) -> some View {
         if i == 0 {
-            WheelSlot(label: "Fists", ammo: nil, selected: false, filled: true, size: size)
+            WheelSlot(label: "Fists", icon: IconCache.shared.image("fists", tables), ammo: nil, selected: false, filled: true, size: size)
         } else {
             let w = editor.slots[i]
             let info = w.flatMap { tables.weapon($0.name) }
             let ammo: Double? = w.flatMap { w in (info?.maxRounds ?? 0) > 0 ? Double(w.reserve) / Double(info!.maxRounds) : nil }
             Button { editor.selectedSlot = i; openSlot = i } label: {
-                WheelSlot(label: w.map { tables.title($0.name) } ?? GameTables.slotNames[i], ammo: ammo, selected: editor.selectedSlot == i, filled: w != nil, size: size)
+                WheelSlot(label: w.map { tables.title($0.name) } ?? GameTables.slotNames[i], icon: w.flatMap { IconCache.shared.image($0.name, tables) },
+                          ammo: ammo, selected: editor.selectedSlot == i, filled: w != nil, size: size)
             }
             .buttonStyle(.plain)
             .popover(isPresented: Binding(get: { openSlot == i }, set: { if !$0 { openSlot = nil } })) {
-                ChoiceList(title: GameTables.slotNames[i], choices: tables.choices(slot: i).map { ($0.name, $0.title) }, current: w?.name) { name in
+                ChoiceList(title: GameTables.slotNames[i], choices: tables.choices(slot: i).map { ($0.name, $0.title) }, tables: tables, current: w?.name) { name in
                     editor.setWeapon(slot: i, to: name.flatMap { tables.weapon($0) })
                     openSlot = nil
                 }
@@ -246,11 +291,11 @@ struct WeaponWheel: View {
     private func quickSlot(_ i: Int, size: CGFloat) -> some View {
         let item = editor.quick[i]
         return Button { openQuick = i } label: {
-            WheelSlot(label: item.map { tables.title($0) } ?? "", ammo: nil, selected: false, filled: item != nil, size: size)
+            WheelSlot(label: item.map { tables.title($0) } ?? "", icon: item.flatMap { IconCache.shared.image($0, tables) }, ammo: nil, selected: false, filled: item != nil, size: size)
         }
         .buttonStyle(.plain)
         .popover(isPresented: Binding(get: { openQuick == i }, set: { if !$0 { openQuick = nil } })) {
-            ChoiceList(title: "Food and drink", choices: tables.food.map { ($0, tables.title($0)) }, current: item) { name in
+            ChoiceList(title: "Food and drink", choices: tables.food.map { ($0, tables.title($0)) }, tables: tables, current: item) { name in
                 editor.quick[i] = name; editor.touch(); openQuick = nil
             }
         }
@@ -297,6 +342,7 @@ struct ContentView: View {
                     }
                 }
                 Spacer()
+                restoreMenu
                 Button("Save") { editor.write() }.keyboardShortcut("s").disabled(!editor.canSave)
             }.padding(10)
             Divider()
@@ -326,6 +372,19 @@ struct ContentView: View {
             Divider()
             HStack { Text(editor.status).font(.callout).foregroundColor(.secondary).lineLimit(2); Spacer() }.padding(8)
         }.frame(minWidth: 900, minHeight: 680)
+    }
+
+    /// Restore backup…: the dated copies of whichever file the current screen edits.
+    @ViewBuilder var restoreMenu: some View {
+        let online = screen == .online
+        let file: URL? = online ? editor.character?.url : editor.save?.url
+        let backups = file.map { Backups.list(for: $0) } ?? []
+        Menu("Restore backup…") {
+            if backups.isEmpty { Text("No backups yet") }
+            ForEach(backups, id: \.self) { b in
+                Button(b.lastPathComponent) { editor.restore(b, online: online) }
+            }
+        }.frame(maxWidth: 170).disabled(file == nil).id(editor.revision)
     }
 
     var needsGameFiles: some View {

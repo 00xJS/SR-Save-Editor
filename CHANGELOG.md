@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+Mac and Windows.
+
+- The weapon wheel shows the game's own icons, read from your game files.
+- Restore backup for story saves (and for the online character on Mac).
+- `tests/compare.sh` checks that both versions write identical saves.
+
 ## 0.2.0
 
 Mac version (`mac/`), a native app, and the same new features in the Windows version.

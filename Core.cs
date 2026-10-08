@@ -205,14 +205,14 @@ namespace MpCharacterEditor
             }
         }
 
-        static int Number(string s)
+        public static int Number(string s)
         {
             int v;
             return s != null && int.TryParse(s, out v) ? v : 0;
         }
 
         // The top-level <element> blocks of one of the game's tables.
-        List<string> Blocks(string file, string element)
+        public List<string> Blocks(string file, string element)
         {
             List<string> list = new List<string>();
             string text;
@@ -226,7 +226,7 @@ namespace MpCharacterEditor
             }
             return list;
         }
-        static string Tag(string block, string name)
+        public static string Tag(string block, string name)
         {
             int a = block.IndexOf("<" + name + ">", StringComparison.Ordinal);
             if (a < 0) return null;
@@ -273,6 +273,165 @@ namespace MpCharacterEditor
                 for (int i = 0; i < 8; i++) c = (c & 1) != 0 ? (c >> 1) ^ 0xEDB88320u : c >> 1;
             }
             return c;
+        }
+    }
+
+    class RgbaImage { public int Width, Height; public byte[] Pixels; }
+
+    // The game's own HUD icons, read from the player's files: bitmap_sheets.xtbl
+    // (misc.vpp_xbox2) says where each icon sits on a sheet, and the sheets are
+    // textures in interface-backend.peg_xbox2 (pegfiles.vpp_xbox2).
+    //
+    // The texture decoding (Xenos tiling, DXT3/DXT5) is adapted from
+    // tools/glyphgen in Saints Reborn by Whompay (Apache License 2.0; see
+    // THIRD_PARTY_NOTICES.md).
+    class GameIcons
+    {
+        class Sprite { public string Sheet; public int X, Y, Width, Height; }
+        class Texture { public int Offset, Width, Height, Format; }
+        readonly Dictionary<string, Sprite> sprites = new Dictionary<string, Sprite>();
+        readonly Dictionary<string, Texture> textures = new Dictionary<string, Texture>();
+        readonly Dictionary<string, RgbaImage> decoded = new Dictionary<string, RgbaImage>();
+        readonly Dictionary<string, string> bitmapOf = new Dictionary<string, string>();   // item name (lower case) -> icon name
+        readonly byte[] peg;
+
+        // Returns null when the files are not there.
+        public static GameIcons Open(GameData game, string distFolder)
+        {
+            try { return new GameIcons(game, distFolder); }
+            catch (Exception) { return null; }
+        }
+
+        GameIcons(GameData game, string distFolder)
+        {
+            string text = Encoding.GetEncoding(28591).GetString(game.Pack.Read("bitmap_sheets.xtbl"));
+            string[] sheets = text.Split(new string[] { "<BitmapSheets>" }, StringSplitOptions.None);
+            for (int i = 1; i < sheets.Length; i++)
+            {
+                string name = GameData.Tag(sheets[i], "Name");
+                if (name == null) continue;
+                string[] images = sheets[i].Split(new string[] { "<Properties>" }, StringSplitOptions.None);
+                for (int k = 1; k < images.Length; k++)
+                {
+                    string n = GameData.Tag(images[k], "Name");
+                    if (n == null) continue;
+                    Sprite s = new Sprite();
+                    s.Sheet = name; s.X = GameData.Number(GameData.Tag(images[k], "StartX")); s.Y = GameData.Number(GameData.Tag(images[k], "StartY"));
+                    s.Width = GameData.Number(GameData.Tag(images[k], "ImageWidth")); s.Height = GameData.Number(GameData.Tag(images[k], "ImageHeight"));
+                    if (s.Width > 0 && s.Height > 0) sprites[n] = s;
+                }
+            }
+            Packfile pegs = new Packfile(Path.Combine(distFolder, @"game\packfiles\pegfiles.vpp_xbox2"));
+            peg = pegs.Read("interface-backend.peg_xbox2");
+            // A peg file: u16 texture count at 0x10, then 0x48-byte entries from 0x18:
+            // u32 data offset, u16 width, u16 height, u16 format, ..., name at +0x16.
+            int count = (peg[0x10] << 8) | peg[0x11];
+            for (int j = 0; j < count; j++)
+            {
+                int e = 0x18 + j * 0x48;
+                if (e + 0x48 > peg.Length) break;
+                Texture t = new Texture();
+                t.Offset = (int)Be.U32(peg, e); t.Width = (peg[e + 4] << 8) | peg[e + 5]; t.Height = (peg[e + 6] << 8) | peg[e + 7]; t.Format = (peg[e + 8] << 8) | peg[e + 9];
+                StringBuilder nm = new StringBuilder();
+                for (int c = e + 0x16; c < e + 0x46 && peg[c] != 0; c++) if (peg[c] >= 32) nm.Append((char)peg[c]);
+                textures[nm.ToString().Replace(".tga", "")] = t;
+            }
+            foreach (string[] table in new string[][] { new string[] { "items_inventory.xtbl", "Inventory_Item" }, new string[] { "drugs.xtbl", "Drug" } })
+                foreach (string block in game.Blocks(table[0], table[1]))
+                {
+                    string n = GameData.Tag(block, "Name"), b = GameData.Tag(block, "Bitmap");
+                    if (n != null && b != null) bitmapOf[n.ToLowerInvariant()] = b;
+                }
+            if (!bitmapOf.ContainsKey("the_fist")) bitmapOf["the_fist"] = "ui_hud_inv_burger";
+        }
+
+        // The icon for a weapon or food item, by the game's item name; "fists" for the hands.
+        public RgbaImage Icon(string item)
+        {
+            string key = item.ToLowerInvariant();
+            if (key == "fists") key = "fist";
+            else if (bitmapOf.ContainsKey(key)) key = bitmapOf[key];
+            Sprite s;
+            if (!sprites.TryGetValue(key, out s)) return null;
+            RgbaImage sheet = DecodeSheet(s.Sheet);
+            if (sheet == null) return null;
+            RgbaImage r = new RgbaImage();
+            r.Width = s.Width; r.Height = s.Height; r.Pixels = new byte[s.Width * s.Height * 4];
+            for (int y = 0; y < s.Height && s.Y + y < sheet.Height; y++)
+            {
+                int n = Math.Min(s.Width, sheet.Width - s.X) * 4;
+                if (n <= 0) break;
+                Buffer.BlockCopy(sheet.Pixels, ((s.Y + y) * sheet.Width + s.X) * 4, r.Pixels, y * s.Width * 4, n);
+            }
+            return r;
+        }
+
+        RgbaImage DecodeSheet(string name)
+        {
+            RgbaImage d;
+            if (decoded.TryGetValue(name, out d)) return d;
+            Texture t;
+            if (!textures.TryGetValue(name, out t) || (t.Format != 0x191 && t.Format != 0x192) || t.Offset >= peg.Length) return null;
+            d = Decode(peg, t.Offset, t.Width, t.Height, t.Format);
+            decoded[name] = d;
+            return d;
+        }
+
+        // ---- Xenos tiling and DXT (from glyphgen) ----
+        static long Tiled(long x, long y, long w, int lb)
+        {
+            long aw = (w + 31) & ~31L;
+            long macro = ((x >> 5) + (y >> 5) * (aw >> 5)) << (lb + 7);
+            long micro = ((x & 7) + ((y & 6) << 2)) << lb;
+            long off = macro + ((micro & ~15L) << 1) + (micro & 15) + ((y & 8) << (3 + lb)) + ((y & 1) << 4);
+            return (((off & ~511L) << 3) + ((off & 448) << 2) + (off & 63) + ((y & 16) << 7) + (((((y & 8) >> 2) + (x >> 3)) & 3) << 6)) >> lb;
+        }
+        static void C565(int c, int[] o) { o[0] = ((c >> 11) & 31) * 255 / 31; o[1] = ((c >> 5) & 63) * 255 / 63; o[2] = (c & 31) * 255 / 31; }
+
+        static RgbaImage Decode(byte[] data, int start, int w, int h, int fmt)
+        {
+            RgbaImage img = new RgbaImage();
+            img.Width = w; img.Height = h; img.Pixels = new byte[w * h * 4];
+            int bw = Math.Max(1, w / 4), bh = Math.Max(1, h / 4);
+            byte[] b = new byte[16];
+            int[][] p = { new int[3], new int[3], new int[3], new int[3] };
+            int[] al = new int[16], pal = new int[8];
+            for (int by = 0; by < bh; by++)
+                for (int bx = 0; bx < bw; bx++)
+                {
+                    long o = start + Tiled(bx, by, bw, 4) * 16;
+                    if (o + 16 > data.Length) return null;
+                    for (int i = 0; i < 16; i += 2) { b[i] = data[o + i + 1]; b[i + 1] = data[o + i]; }   // byte-swapped u16s
+                    int c0 = b[8] | (b[9] << 8), c1 = b[10] | (b[11] << 8);
+                    uint idx = (uint)b[12] | ((uint)b[13] << 8) | ((uint)b[14] << 16) | ((uint)b[15] << 24);
+                    C565(c0, p[0]); C565(c1, p[1]);
+                    for (int k = 0; k < 3; k++) { p[2][k] = (2 * p[0][k] + p[1][k]) / 3; p[3][k] = (p[0][k] + 2 * p[1][k]) / 3; }
+                    if (fmt == 0x191)
+                    {
+                        ulong a = 0;
+                        for (int i = 0; i < 8; i++) a |= (ulong)b[i] << (8 * i);
+                        for (int i = 0; i < 16; i++) al[i] = (int)((a >> (4 * i)) & 15) * 17;
+                    }
+                    else
+                    {
+                        int a0 = b[0], a1 = b[1];
+                        ulong bits = 0;
+                        for (int i = 0; i < 6; i++) bits |= (ulong)b[2 + i] << (8 * i);
+                        pal[0] = a0; pal[1] = a1;
+                        if (a0 > a1) for (int i = 0; i < 6; i++) pal[2 + i] = ((6 - i) * a0 + (i + 1) * a1) / 7;
+                        else { for (int i = 0; i < 4; i++) pal[2 + i] = ((4 - i) * a0 + (i + 1) * a1) / 5; pal[6] = 0; pal[7] = 255; }
+                        for (int i = 0; i < 16; i++) al[i] = pal[(int)((bits >> (3 * i)) & 7)];
+                    }
+                    for (int i = 0; i < 16; i++)
+                    {
+                        int x = bx * 4 + i % 4, y = by * 4 + i / 4;
+                        if (x >= w || y >= h) continue;
+                        int[] c = p[(int)((idx >> (2 * i)) & 3)];
+                        int q = (y * w + x) * 4;
+                        img.Pixels[q] = (byte)c[0]; img.Pixels[q + 1] = (byte)c[1]; img.Pixels[q + 2] = (byte)c[2]; img.Pixels[q + 3] = (byte)al[i];
+                    }
+                }
+            return img;
         }
     }
 
@@ -466,10 +625,17 @@ namespace MpCharacterEditor
         public string Save()
         {
             WriteInventory();
-            string stem = Path + "." + DateTime.Now.ToString("yyyyMMdd-HHmmss"), backup = stem + ".bak";
-            for (int n = 2; File.Exists(backup); n++) backup = stem + "-" + n + ".bak";
-            File.Copy(Path, backup, false);
+            string backup = Backup(Path);
             File.WriteAllBytes(Path, data);
+            return backup;
+        }
+
+        // Keeps a dated copy of a file next to it and returns its name.
+        public static string Backup(string path)
+        {
+            string stem = path + "." + DateTime.Now.ToString("yyyyMMdd-HHmmss"), backup = stem + ".bak";
+            for (int n = 2; File.Exists(backup); n++) backup = stem + "-" + n + ".bak";
+            File.Copy(path, backup, false);
             return backup;
         }
     }

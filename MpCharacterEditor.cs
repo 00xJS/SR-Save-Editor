@@ -205,8 +205,7 @@ namespace MpCharacterEditor
                 Be.Put(data, OwnedAt + 12 * k, (uint)owned[k].Item);
                 Be.Put(data, OwnedAt + 12 * k + 4, (uint)owned[k].Variant);
             }
-            string backup = Path + "." + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".bak";
-            File.Copy(Path, backup, true);
+            string backup = StorySave.Backup(Path);
             File.WriteAllBytes(Path, data);
             return backup;
         }
@@ -306,6 +305,7 @@ namespace MpCharacterEditor
         public readonly bool[] Filled = new bool[8];
         public readonly double[] Ammo = new double[8];   // 0..1, below 0 = no ammo arc
         public readonly string[] Quick = new string[4];
+        public readonly Image[] Icons = new Image[8], QuickIcons = new Image[4];
         public int Selected = 2;
         public event Action<int> SlotClicked, QuickClicked;
 
@@ -338,8 +338,8 @@ namespace MpCharacterEditor
             RectangleF area = new RectangleF(Origin.X, Origin.Y, side, side);
             using (LinearGradientBrush back = new LinearGradientBrush(area, Color.FromArgb(115, 128, 219), Color.FromArgb(148, 158, 230), 90f))
                 g.FillRectangle(back, area);
-            for (int i = 0; i < 8; i++) DrawSlot(g, SlotCentre(i), side * 0.165f, Labels[i], Filled[i], Ammo[i], i == Selected && i != 0);
-            for (int i = 0; i < 4; i++) DrawSlot(g, QuickCentre(i), side * 0.11f, Quick[i] ?? "", Quick[i] != null, -1, false);
+            for (int i = 0; i < 8; i++) DrawSlot(g, SlotCentre(i), side * 0.165f, Labels[i], Icons[i], Filled[i], Ammo[i], i == Selected && i != 0);
+            for (int i = 0; i < 4; i++) DrawSlot(g, QuickCentre(i), side * 0.11f, Quick[i] ?? "", QuickIcons[i], Quick[i] != null, -1, false);
 
             PointF c = new PointF(Origin.X + side * 0.42f, Origin.Y + side * 0.44f);
             float d = side * 0.13f;
@@ -357,7 +357,7 @@ namespace MpCharacterEditor
             }
         }
 
-        void DrawSlot(Graphics g, PointF c, float size, string label, bool filled, double ammo, bool selected)
+        void DrawSlot(Graphics g, PointF c, float size, string label, Image icon, bool filled, double ammo, bool selected)
         {
             RectangleF r = new RectangleF(c.X - size / 2, c.Y - size / 2, size, size);
             if (selected)
@@ -377,8 +377,16 @@ namespace MpCharacterEditor
             if (ammo >= 0)
                 using (Pen arc = new Pen(Color.FromArgb(255, 140, 20), size * 0.07f))
                     g.DrawArc(arc, r, 100f, (float)(115.2 * Math.Max(0.04, Math.Min(1.0, ammo))));
-            DrawText(g, label, RectangleF.Inflate(r, -size * 0.07f, -size * 0.07f), Math.Max(7f, size * 0.105f),
-                     filled ? Color.White : Color.FromArgb(140, 255, 255, 255));
+            if (icon != null)
+            {
+                float iw = size * 0.72f, ih = iw * icon.Height / icon.Width;
+                if (ih > size * 0.55f) { ih = size * 0.55f; iw = ih * icon.Width / icon.Height; }
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.DrawImage(icon, new RectangleF(c.X - iw / 2, c.Y - ih / 2, iw, ih));
+            }
+            else
+                DrawText(g, label, RectangleF.Inflate(r, -size * 0.07f, -size * 0.07f), Math.Max(7f, size * 0.105f),
+                         filled ? Color.White : Color.FromArgb(140, 255, 255, 255));
         }
 
         static void DrawText(Graphics g, string text, RectangleF r, float size, Color colour)
@@ -411,6 +419,8 @@ namespace MpCharacterEditor
     {
         string dist;
         GameData game;
+        GameIcons icons;
+        readonly Dictionary<string, Image> iconCache = new Dictionary<string, Image>();
         Tables tables;
 
         // Story save.
@@ -423,7 +433,7 @@ namespace MpCharacterEditor
         readonly List<string> storyFiles = new List<string>();
         readonly TabControl sections = new TabControl(), storyTabs = new TabControl();
         readonly ComboBox storyBox = new ComboBox(), ownerBox = new ComboBox();
-        readonly Button storySave = new Button(), storyReload = new Button(), storyFolder = new Button();
+        readonly Button storySave = new Button(), storyReload = new Button(), storyFolder = new Button(), storyRestore = new Button();
         readonly NumericUpDown storyCash = new NumericUpDown(), respectBox = new NumericUpDown();
         readonly NumericUpDown loadedBox = new NumericUpDown(), spareBox = new NumericUpDown();
         readonly Label respectNote = new Label(), ammoTitle = new Label(), stashNote = new Label(), hoodNote = new Label();
@@ -580,6 +590,9 @@ namespace MpCharacterEditor
             {
                 game = new GameData(dist);
                 tables = new Tables(game);
+                icons = GameIcons.Open(game, dist);
+                foreach (Image i in iconCache.Values) if (i != null) i.Dispose();
+                iconCache.Clear();
                 Game.Remember(dist);
             }
             catch (Exception ex)
@@ -647,7 +660,9 @@ namespace MpCharacterEditor
             storyReload.Text = "Reload"; storyReload.AutoSize = true; storyReload.Click += delegate { LoadStoryList(); };
             storyFolder.Text = "Game folder..."; storyFolder.AutoSize = true;
             storyFolder.Click += delegate { if (ChooseFolder()) LoadGame(); };
-            top.Controls.Add(storySave); top.Controls.Add(storyReload); top.Controls.Add(storyFolder);
+            storyRestore.Text = "Restore backup..."; storyRestore.AutoSize = true;
+            storyRestore.Click += delegate { RestoreStory(); };
+            top.Controls.Add(storySave); top.Controls.Add(storyReload); top.Controls.Add(storyRestore); top.Controls.Add(storyFolder);
 
             // Player
             FlowLayoutPanel player = Row();
@@ -793,7 +808,7 @@ namespace MpCharacterEditor
             if (storyFiles.Count == 0)
             {
                 story = null; storyDirty = false;
-                storySave.Enabled = false;
+                storySave.Enabled = false; storyRestore.Enabled = false;
                 ShowStatus();
                 return;
             }
@@ -840,7 +855,7 @@ namespace MpCharacterEditor
             }
             filling = false;
             storyDirty = false;
-            storySave.Enabled = true;
+            storySave.Enabled = true; storyRestore.Enabled = true;
             ShowHoods(); ShowWheel(); ShowCounts(); ShowStatus();
         }
 
@@ -894,10 +909,39 @@ namespace MpCharacterEditor
             cheatList.EndUpdate();
         }
 
+        // The game's icon for an item, as a picture (null when the game files have none).
+        Image IconOf(string item)
+        {
+            Image cached;
+            if (iconCache.TryGetValue(item, out cached)) return cached;
+            Image result = null;
+            RgbaImage img = icons == null ? null : icons.Icon(item);
+            if (img != null)
+            {
+                Bitmap bmp = new Bitmap(img.Width, img.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                System.Drawing.Imaging.BitmapData bd = bmp.LockBits(new Rectangle(0, 0, img.Width, img.Height),
+                    System.Drawing.Imaging.ImageLockMode.WriteOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                byte[] row = new byte[img.Width * 4];
+                for (int y = 0; y < img.Height; y++)
+                {
+                    for (int x = 0; x < img.Width; x++)
+                    {
+                        int q = (y * img.Width + x) * 4;   // RGBA -> BGRA
+                        row[x * 4] = img.Pixels[q + 2]; row[x * 4 + 1] = img.Pixels[q + 1]; row[x * 4 + 2] = img.Pixels[q]; row[x * 4 + 3] = img.Pixels[q + 3];
+                    }
+                    System.Runtime.InteropServices.Marshal.Copy(row, 0, bd.Scan0 + y * bd.Stride, row.Length);
+                }
+                bmp.UnlockBits(bd);
+                result = bmp;
+            }
+            iconCache[item] = result;
+            return result;
+        }
+
         // Puts the slots on the wheel and the selected weapon's ammo under it.
         void ShowWheel()
         {
-            wheel.Labels[0] = "Fists"; wheel.Filled[0] = true; wheel.Ammo[0] = -1;
+            wheel.Labels[0] = "Fists"; wheel.Filled[0] = true; wheel.Ammo[0] = -1; wheel.Icons[0] = IconOf("fists");
             for (int i = 1; i < 8; i++)
             {
                 CarriedWeapon w = slots[i];
@@ -905,8 +949,13 @@ namespace MpCharacterEditor
                 wheel.Labels[i] = w == null ? GameData.SlotNames[i] : game != null ? game.Title(w.Name) : w.Name;
                 wheel.Filled[i] = w != null;
                 wheel.Ammo[i] = info != null && info.MaxRounds > 0 ? (double)w.Reserve / info.MaxRounds : -1;
+                wheel.Icons[i] = w == null ? null : IconOf(w.Name);
             }
-            for (int i = 0; i < 4; i++) wheel.Quick[i] = quick[i] == null ? null : game != null ? game.Title(quick[i]) : quick[i];
+            for (int i = 0; i < 4; i++)
+            {
+                wheel.Quick[i] = quick[i] == null ? null : game != null ? game.Title(quick[i]) : quick[i];
+                wheel.QuickIcons[i] = quick[i] == null ? null : IconOf(quick[i]);
+            }
             wheel.Invalidate();
 
             CarriedWeapon sel = slots[wheel.Selected];
@@ -940,10 +989,12 @@ namespace MpCharacterEditor
             wheel.Selected = slot;
             ShowWheel();
             ContextMenuStrip menu = new ContextMenuStrip();
+            menu.ImageScalingSize = new Size(42, 32);
             foreach (WeaponInfo info in game.Choices(slot))
             {
                 WeaponInfo pick = info;
-                ToolStripMenuItem item = new ToolStripMenuItem(info.Title);
+                ToolStripMenuItem item = new ToolStripMenuItem(info.Title, IconOf(info.Name));
+                item.ImageScaling = ToolStripItemImageScaling.SizeToFit;
                 item.Checked = slots[slot] != null && string.Equals(slots[slot].Name, info.Name, StringComparison.OrdinalIgnoreCase);
                 item.Click += delegate
                 {
@@ -964,10 +1015,12 @@ namespace MpCharacterEditor
         {
             if (story == null || game == null) return;
             ContextMenuStrip menu = new ContextMenuStrip();
+            menu.ImageScalingSize = new Size(42, 32);
             foreach (string food in game.Food)
             {
                 string pick = food;
-                ToolStripMenuItem item = new ToolStripMenuItem(game.Title(food));
+                ToolStripMenuItem item = new ToolStripMenuItem(game.Title(food), IconOf(food));
+                item.ImageScaling = ToolStripItemImageScaling.SizeToFit;
                 item.Checked = quick[index] == food;
                 item.Click += delegate { quick[index] = pick; StoryChanged(); ShowWheel(); };
                 menu.Items.Add(item);
@@ -978,6 +1031,34 @@ namespace MpCharacterEditor
             empty.Click += delegate { quick[index] = null; StoryChanged(); ShowWheel(); };
             menu.Items.Add(empty);
             menu.Show(Cursor.Position);
+        }
+
+        // Puts an earlier copy of the save back; the current one is kept as a backup first.
+        void RestoreStory()
+        {
+            if (story == null || !GameClosed()) return;
+            using (OpenFileDialog dlg = new OpenFileDialog())
+            {
+                dlg.Title = "Choose the backup to restore";
+                dlg.InitialDirectory = Path.GetDirectoryName(story.Path);
+                dlg.Filter = "Save backups (game.dat.*)|game.dat.*|All files (*.*)|*.*";
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    new StorySave(dlg.FileName);   // checks that it is a save
+                    string keep = StorySave.Backup(story.Path);
+                    File.Copy(dlg.FileName, story.Path, true);
+                    int selected = storyBox.SelectedIndex;
+                    LoadStory();
+                    MessageBox.Show(this, "Restored.\n\nThe save you had just now is kept as\n" + Path.GetFileName(keep), Text,
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "The backup could not be restored.\n\n" + ex.Message, Text,
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
         }
 
         void SaveStory()
@@ -1145,8 +1226,7 @@ namespace MpCharacterEditor
                 {
                     if (new FileInfo(dlg.FileName).Length != Character.Size)
                         throw new InvalidDataException("That file is not a multiplayer character file.");
-                    string keep = character.Path + "." + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".bak";
-                    File.Copy(character.Path, keep, true);
+                    string keep = StorySave.Backup(character.Path);
                     File.Copy(dlg.FileName, character.Path, true);
                     LoadCharacter();
                     MessageBox.Show(this, "Restored.\n\nThe character you had just now is kept as\n" + Path.GetFileName(keep), Text,
