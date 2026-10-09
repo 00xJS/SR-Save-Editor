@@ -90,6 +90,18 @@ final class WardrobeTables {
         }
     }
 
+    /// Hair, faces and tattoos are not clothing: the game does not list them as owned.
+    static let appearance: Set<String> = ["Hair", "Eyebrows", "Eyes", "Sideburns", "Mustache", "Beard", "Skin", "Tattoo"]
+    func isClothing(_ item: Int) -> Bool { items[item].map { !Self.appearance.contains($0.category) } ?? false }
+    /// Every piece of clothing in the game files, one entry per colour, for the owned list of the story save.
+    private(set) lazy var clothing: [ClothingChoice] = {
+        var out: [ClothingChoice] = []
+        for item in items.values.sorted(by: { $0.title < $1.title }) where !Self.appearance.contains(item.category) {
+            for v in item.variants { out.append(ClothingChoice(pair: ClothingPair(item: item.id, variant: v.id), title: item.title, style: v.title, category: item.category)) }
+        }
+        return out
+    }()
+
     /// Items that can go in a slot, in the game's order.
     func choices(slot: Int) -> [WardrobeItem] {
         items.values.filter { !$0.options(in: slot).isEmpty }.sorted { $0.id < $1.id }

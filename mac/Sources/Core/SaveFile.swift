@@ -18,6 +18,8 @@ final class SinglePlayerSave {
     private static let endPointerAt = 0x6FF8
     // What the player wears: count, then 16-byte records in the header (room for 128).
     private static let outfitCountAt = 0x64C, outfitAt = 0x650
+    // Clothing owned: count, then 12-byte records (item, variant, 0) in the header (room for 2048).
+    private static let ownedCountAt = 0xE50, ownedAt = 0xE54, ownedMax = 2048
     private static let unlockedFlag: UInt32 = 0x8000_0000
 
     private(set) var data: Data
@@ -30,6 +32,9 @@ final class SinglePlayerSave {
     var food: [String] = []
     /// What the player wears, one record per body slot.
     var outfit: [WornItem] = []
+    /// Clothing owned (bought or worn), in the game's order.
+    var owned: [ClothingPair] = []
+    private var loadedOwned: [ClothingPair] = []
     private var loadedWeapons: [CarriedWeapon] = []
     private var loadedFood: [String] = []
     private var loadedOutfit: [WornItem] = []
@@ -78,6 +83,10 @@ final class SinglePlayerSave {
         loadedWeapons = weapons; loadedFood = food
         outfit = [WornItem].read(u32, countAt: Self.outfitCountAt, at: Self.outfitAt, max: WardrobeTables.maxWorn)
         loadedOutfit = outfit
+        for k in 0..<Int(min(u32(Self.ownedCountAt), UInt32(Self.ownedMax))) {
+            owned.append(ClothingPair(item: Int(u32(Self.ownedAt + 12 * k)), variant: Int(u32(Self.ownedAt + 12 * k + 4))))
+        }
+        loadedOwned = owned
         if let l = list(Self.contactsAt, recordSize: 12, limit: 64) {
             for i in 0..<l.count {
                 let o = l.pointer + i * 12
@@ -169,10 +178,23 @@ final class SinglePlayerSave {
         data.replaceSubrange(Self.outfitAt..<Self.outfitAt + WardrobeTables.maxWorn * 16, with: worn.records(max: WardrobeTables.maxWorn))
         loadedOutfit = outfit
     }
+    private func writeOwned() {
+        guard owned != loadedOwned else { return }
+        let list = Array(owned.prefix(Self.ownedMax))
+        setU32(Self.ownedCountAt, UInt32(list.count))
+        var block = [UInt8](repeating: 0, count: Self.ownedMax * 12)
+        for (k, p) in list.enumerated() {
+            block.replaceSubrange(12 * k..<12 * k + 4, with: Self.bytes(UInt32(p.item)))
+            block.replaceSubrange(12 * k + 4..<12 * k + 8, with: Self.bytes(UInt32(p.variant)))
+        }
+        data.replaceSubrange(Self.ownedAt..<Self.ownedAt + Self.ownedMax * 12, with: block)
+        loadedOwned = owned
+    }
 
     func write() throws -> URL {
         writeInventory()
         writeOutfit()
+        writeOwned()
         let backup = try Backups.keep(url)
         try data.write(to: url, options: .atomic)
         return backup

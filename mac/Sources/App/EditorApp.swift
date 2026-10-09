@@ -16,6 +16,7 @@ final class Editor: ObservableObject {
     @Published var quick: [String?] = Array(repeating: nil, count: 4)
     @Published var selectedSlot = 2
     @Published var outfit: [WornItem] = []
+    @Published var storyOwned: Set<ClothingPair> = []
     private var extras: [CarriedWeapon] = []
     private var extraFood: [String] = []
     // Online character.
@@ -87,6 +88,7 @@ final class Editor: ObservableObject {
             for (i, f) in s.food.prefix(4).enumerated() { quick[i] = f }
             extraFood = Array(s.food.dropFirst(4))
             outfit = s.outfit
+            storyOwned = Set(s.owned)
             status = "Loaded the save from \(title(of: url))."
         } catch { save = nil; status = "\(error)" }
         revision += 1
@@ -148,6 +150,11 @@ final class Editor: ObservableObject {
                     s.food = quick.compactMap { $0 } + extraFood
                 }
                 s.outfit = outfit
+                // Clothing that is worn is owned; hair and faces are not clothing.
+                var want = storyOwned
+                if let w = wardrobe { for x in outfit where w.isClothing(x.item) { want.insert(ClothingPair(item: x.item, variant: x.variant)) } }
+                s.owned = s.owned.filter { want.contains($0) } + want.subtracting(s.owned).sorted { ($0.item, $0.variant) < ($1.item, $1.variant) }
+                storyOwned = Set(s.owned)
                 notes.append("Story save written (previous kept as \(try s.write().lastPathComponent)).")
                 spDirty = false
             }
@@ -342,6 +349,7 @@ struct ContentView: View {
     @State var cheatSearch = ""
     @State var clothingSearch = ""
     @State var onlineTab = 0
+    @State var wardrobeTab = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -452,7 +460,16 @@ struct ContentView: View {
 
     @ViewBuilder var wardrobeScreen: some View {
         if let w = editor.wardrobe {
-            WardrobeView(outfit: $editor.outfit, tables: w) { editor.touch() }
+            VStack(spacing: 0) {
+                Picker("", selection: $wardrobeTab) { Text("Wearing").tag(0); Text("Clothing owned").tag(1) }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 260).padding(10)
+                if wardrobeTab == 0 {
+                    WardrobeView(outfit: $editor.outfit, tables: w) { editor.touch() }
+                } else {
+                    OwnedListView(choices: w.clothing, owned: $editor.storyOwned, locked: Set(editor.outfit.filter { w.isClothing($0.item) }.map { ClothingPair(item: $0.item, variant: $0.variant) }),
+                                  note: "Bought in the story. What is worn stays owned.") { editor.touch() }
+                }
+            }
         } else { needsGameFiles }
     }
 
@@ -526,7 +543,6 @@ struct ContentView: View {
         if let c = editor.character {
             let store = editor.clothing?.store ?? []
             let wearingNow = Set(editor.mpOutfit.map { ClothingPair(item: $0.item, variant: $0.variant) })
-            let shown = store.filter { clothingSearch.isEmpty || $0.title.localizedCaseInsensitiveContains(clothingSearch) || $0.style.localizedCaseInsensitiveContains(clothingSearch) || $0.category.localizedCaseInsensitiveContains(clothingSearch) }
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Picker("Player", selection: Binding(get: { editor.playerName }, set: { editor.openPlayer($0) })) {
@@ -542,21 +558,7 @@ struct ContentView: View {
                         WardrobeView(outfit: $editor.mpOutfit, tables: w, allowed: Set(store.map(\.pair))) { editor.touchOnline() }
                     } else { needsGameFiles }
                 } else {
-                HStack {
-                    Text("Owns \(store.filter { editor.ownedClothing.contains($0.pair) }.count) of \(store.count) clothing styles").foregroundColor(.secondary)
-                    Spacer()
-                    TextField("Search", text: $clothingSearch).textFieldStyle(.roundedBorder).frame(width: 180)
-                    Button("Own all") { editor.ownedClothing.formUnion(store.map(\.pair)); editor.touchOnline() }
-                    Button("Own none") { editor.ownedClothing = editor.ownedClothing.filter { wearingNow.contains($0) }; editor.touchOnline() }
-                }.padding(.horizontal, 10).padding(.bottom, 8)
-                List(shown) { item in
-                    Toggle(isOn: Binding(get: { editor.ownedClothing.contains(item.pair) }, set: { on in
-                        if on { editor.ownedClothing.insert(item.pair) } else { editor.ownedClothing.remove(item.pair) }
-                        editor.touchOnline()
-                    })) {
-                        HStack { Text(item.title); Text(item.style).foregroundColor(.secondary); Spacer(); Text(wearingNow.contains(item.pair) ? "wearing" : item.category).foregroundColor(.secondary) }
-                    }.disabled(wearingNow.contains(item.pair))
-                }
+                    OwnedListView(choices: store, owned: $editor.ownedClothing, locked: wearingNow, note: "Sold in multiplayer. What is worn stays owned.") { editor.touchOnline() }
                 }
             }
         } else {

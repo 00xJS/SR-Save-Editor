@@ -8,6 +8,7 @@
 //   0x0144  carried weapons: count, pointer to 16-byte records (name, count, loaded, spare)
 //   0x0240  carried food: count, pointer to names
 //   0x064C  outfit: count, then 16-byte records in the header (item, variant, slot, wear option)
+//   0x0E50  clothing owned: count, then 12-byte records in the header (item, variant, 0); room for 2048
 //   0x6E88  homies: count, pointer to 12-byte records (name, 0, unlocked)
 //   0x6E90  neighbourhoods: count, pointer to 12-byte records (name, owner, flags)
 //   0x6F8C  crib weapon cache: count, pointer to 8-byte records (name hash, flags)
@@ -485,6 +486,26 @@ namespace MpCharacterEditor
             new BodySlot(8, "underwear", "Underwear"), new BodySlot(9, "pants", "Pants"), new BodySlot(10, "socks", "Socks"), new BodySlot(11, "shoes", "Shoes"),
         };
         public const int MaxWorn = 128;
+        // Hair, faces and tattoos are not clothing: the game does not list them as owned.
+        static readonly HashSet<string> Appearance = new HashSet<string>(new string[] { "Hair", "Eyebrows", "Eyes", "Sideburns", "Mustache", "Beard", "Skin", "Tattoo" });
+        public bool IsClothing(int item)
+        {
+            WardrobeItem i;
+            return Items.TryGetValue(item, out i) && !Appearance.Contains(i.Category);
+        }
+        // Every piece of clothing in the game files, one entry per colour, for the owned list of the story save.
+        public List<Pair> Clothing
+        {
+            get
+            {
+                List<WardrobeItem> all = new List<WardrobeItem>(Items.Values);
+                all.Sort(delegate(WardrobeItem a, WardrobeItem b) { return string.CompareOrdinal(a.Title, b.Title); });
+                List<Pair> r = new List<Pair>();
+                foreach (WardrobeItem i in all)
+                    if (!Appearance.Contains(i.Category)) foreach (WardrobeVariant v in i.Variants) r.Add(new Pair(i.Id, v.Id));
+                return r;
+            }
+        }
         public static BodySlot Slot(int id)
         {
             foreach (BodySlot s in Slots) if (s.Id == id) return s;
@@ -650,6 +671,8 @@ namespace MpCharacterEditor
         const int WeaponsAt = 0x144, FoodAt = 0x240, HomiesAt = 0x6E88, HoodsAt = 0x6E90, StashAt = 0x6F8C, EndPointerAt = 0x6FF8;
         // What the player wears: count, then 16-byte records in the header (room for 128).
         const int OutfitCountAt = 0x64C, OutfitAt = 0x650;
+        // Clothing owned: count, then 12-byte records (item, variant, 0) in the header (room for 2048).
+        const int OwnedCountAt = 0xE50, OwnedAt = 0xE54, OwnedMax = 2048;
         const uint UnlockedFlag = 0x80000000u;
 
         public readonly string Path;
@@ -662,7 +685,9 @@ namespace MpCharacterEditor
         public List<string> Food = new List<string>();
         // What the player wears, one record per body slot.
         public List<WornItem> Outfit = new List<WornItem>();
-        string loaded, loadedOutfit;
+        // Clothing owned (bought or worn), in the game's order.
+        public List<Pair> Owned = new List<Pair>();
+        string loaded, loadedOutfit, loadedOwned;
 
         public StorySave(string path)
         {
@@ -690,6 +715,9 @@ namespace MpCharacterEditor
             loaded = Inventory();
             Outfit = WardrobeTables.Read(data, OutfitCountAt, OutfitAt, WardrobeTables.MaxWorn);
             loadedOutfit = WardrobeTables.Describe(Outfit);
+            int ownedCount = (int)Math.Min(U32(OwnedCountAt), (uint)OwnedMax);
+            for (int k = 0; k < ownedCount; k++) Owned.Add(new Pair((int)U32(OwnedAt + 12 * k), (int)U32(OwnedAt + 12 * k + 4)));
+            loadedOwned = OwnedText();
             if (List(HomiesAt, 12, 64, out count, out at))
                 for (int i = 0; i < count; i++)
                 {
@@ -736,6 +764,23 @@ namespace MpCharacterEditor
             uint c = U32(at), p = U32(at + 4);
             count = (int)Math.Min(c, 0x7FFFFFFFu); pointer = (int)Math.Min(p, 0x7FFFFFFFu);
             return c <= (uint)limit && p >= 0x7000 && (long)p + (long)c * recordSize <= data.Length;
+        }
+        // Clothing that is worn is owned; hair and faces are not clothing.
+        public void OwnWorn(WardrobeTables tables)
+        {
+            HashSet<long> have = new HashSet<long>();
+            foreach (Pair p in Owned) have.Add(p.Key);
+            foreach (WornItem w in Outfit)
+            {
+                Pair p = new Pair(w.Item, w.Variant);
+                if (tables.IsClothing(w.Item) && have.Add(p.Key)) Owned.Add(p);
+            }
+        }
+        string OwnedText()
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (Pair p in Owned) sb.Append(p.Key).Append(';');
+            return sb.ToString();
         }
         string Inventory()
         {
@@ -833,6 +878,14 @@ namespace MpCharacterEditor
             {
                 WardrobeTables.Write(data, OutfitCountAt, OutfitAt, WardrobeTables.MaxWorn, Outfit);
                 loadedOutfit = WardrobeTables.Describe(Outfit);
+            }
+            if (OwnedText() != loadedOwned)
+            {
+                int n = Math.Min(Owned.Count, OwnedMax);
+                Be.Put(data, OwnedCountAt, (uint)n);
+                Array.Clear(data, OwnedAt, OwnedMax * 12);
+                for (int k = 0; k < n; k++) { Be.Put(data, OwnedAt + 12 * k, (uint)Owned[k].Item); Be.Put(data, OwnedAt + 12 * k + 4, (uint)Owned[k].Variant); }
+                loadedOwned = OwnedText();
             }
             string backup = Backup(Path);
             File.WriteAllBytes(Path, data);

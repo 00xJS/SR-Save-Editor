@@ -80,3 +80,43 @@ struct WardrobeView: View {
         }
     }
 }
+
+/// A tickable list of clothing: the owned list of the story save or of the online character.
+struct OwnedListView: View {
+    let choices: [ClothingChoice]
+    @Binding var owned: Set<ClothingPair>
+    /// Worn right now: owned whatever the tick says.
+    let locked: Set<ClothingPair>
+    let note: String
+    let changed: () -> Void
+    @State private var search = ""
+    @State private var category = "All"
+    @State private var ownedOnly = false
+
+    var body: some View {
+        let categories = ["All"] + Array(Set(choices.map(\.category))).sorted()
+        let shown = choices.filter { c in
+            (category == "All" || c.category == category) && (!ownedOnly || owned.contains(c.pair) || locked.contains(c.pair))
+                && (search.isEmpty || (c.title + " " + c.style + " " + c.category).localizedCaseInsensitiveContains(search))
+        }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Owns \(choices.filter { owned.contains($0.pair) || locked.contains($0.pair) }.count) of \(choices.count). \(note)").foregroundColor(.secondary)
+                Spacer()
+                Toggle("Owned only", isOn: $ownedOnly).toggleStyle(.checkbox)
+                Picker("", selection: $category) { ForEach(categories, id: \.self) { Text($0).tag($0) } }.labelsHidden().frame(width: 150)
+                TextField("Search", text: $search).textFieldStyle(.roundedBorder).frame(width: 160)
+                Button("Own all shown") { owned.formUnion(shown.map(\.pair)); changed() }
+                Button("Own none shown") { owned.subtract(shown.map(\.pair)); changed() }
+            }.padding(.horizontal, 10).padding(.bottom, 8)
+            List(shown) { item in
+                Toggle(isOn: Binding(get: { owned.contains(item.pair) || locked.contains(item.pair) }, set: { on in
+                    if on { owned.insert(item.pair) } else { owned.remove(item.pair) }
+                    changed()
+                })) {
+                    HStack { Text(item.title); Text(item.style).foregroundColor(.secondary); Spacer(); Text(locked.contains(item.pair) ? "wearing" : item.category).foregroundColor(.secondary) }
+                }.disabled(locked.contains(item.pair))
+            }
+        }
+    }
+}

@@ -552,6 +552,116 @@ namespace MpCharacterEditor
         }
     }
 
+    // A tickable list of clothing: the owned list of the story save.
+    class OwnedPanel : Panel
+    {
+        readonly WardrobeTables tables;
+        readonly List<Pair> rows;
+        readonly Action changed;
+        List<Pair> owned = new List<Pair>();          // the save's list, edited in place
+        HashSet<long> locked = new HashSet<long>();   // worn right now: owned whatever the tick says
+        bool filling;
+        readonly ListView list = new ListView();
+        readonly TextBox search = new TextBox();
+        readonly ComboBox categoryBox = new ComboBox();
+        readonly CheckBox ownedOnly = new CheckBox();
+        readonly Label note = new Label();
+
+        public OwnedPanel(WardrobeTables tables, List<Pair> rows, Action changed)
+        {
+            this.tables = tables; this.rows = rows; this.changed = changed;
+            Dock = DockStyle.Fill;
+            FlowLayoutPanel filter = new FlowLayoutPanel();
+            filter.Dock = DockStyle.Top; filter.AutoSize = true; filter.Padding = new Padding(6, 6, 6, 4); filter.WrapContents = false;
+            Label caption = new Label(); caption.Text = "Search"; caption.AutoSize = true; caption.Margin = new Padding(6, 7, 2, 0);
+            filter.Controls.Add(caption);
+            search.Width = 180; search.TextChanged += delegate { Fill(); };
+            filter.Controls.Add(search);
+            categoryBox.DropDownStyle = ComboBoxStyle.DropDownList; categoryBox.Width = 140;
+            SortedSet<string> categories = new SortedSet<string>();
+            foreach (Pair p in rows) categories.Add(tables.Item(p.Item).Category);
+            categoryBox.Items.Add("All categories");
+            foreach (string c in categories) categoryBox.Items.Add(c);
+            categoryBox.SelectedIndex = 0;
+            categoryBox.SelectedIndexChanged += delegate { Fill(); };
+            filter.Controls.Add(categoryBox);
+            ownedOnly.Text = "Owned only"; ownedOnly.AutoSize = true; ownedOnly.Margin = new Padding(8, 7, 8, 0);
+            ownedOnly.CheckedChanged += delegate { Fill(); };
+            filter.Controls.Add(ownedOnly);
+            Button all = new Button(), none = new Button();
+            all.Text = "Tick all shown"; all.AutoSize = true; all.Click += delegate { SetShown(true); };
+            none.Text = "Untick all shown"; none.AutoSize = true; none.Click += delegate { SetShown(false); };
+            filter.Controls.Add(all); filter.Controls.Add(none);
+            note.AutoSize = true; note.Margin = new Padding(12, 7, 0, 0); note.ForeColor = SystemColors.GrayText;
+            filter.Controls.Add(note);
+
+            list.Dock = DockStyle.Fill; list.View = View.Details; list.FullRowSelect = true; list.CheckBoxes = true; list.HideSelection = false;
+            list.Columns.Add("Item", 250); list.Columns.Add("Colour / style", 250); list.Columns.Add("Category", 110); list.Columns.Add("", 110);
+            list.ItemCheck += delegate(object o, ItemCheckEventArgs e)
+            {
+                if (filling) return;
+                Pair p = (Pair)list.Items[e.Index].Tag;
+                if (e.NewValue != CheckState.Checked && locked.Contains(p.Key)) { e.NewValue = CheckState.Checked; return; }
+                Set(p, e.NewValue == CheckState.Checked);
+                changed();
+            };
+            Controls.Add(list); Controls.Add(filter);
+        }
+
+        public void Show(List<Pair> owned, List<WornItem> outfit)
+        {
+            this.owned = owned;
+            locked.Clear();
+            foreach (WornItem w in outfit) if (tables.IsClothing(w.Item)) locked.Add(new Pair(w.Item, w.Variant).Key);
+            Fill();
+        }
+        bool Has(Pair p)
+        {
+            if (locked.Contains(p.Key)) return true;
+            foreach (Pair q in owned) if (q.Key == p.Key) return true;
+            return false;
+        }
+        void Set(Pair p, bool on)
+        {
+            owned.RemoveAll(delegate(Pair q) { return q.Key == p.Key; });
+            if (on) owned.Add(p);
+        }
+        void SetShown(bool on)
+        {
+            foreach (ListViewItem row in list.Items)
+            {
+                Pair p = (Pair)row.Tag;
+                if (on || !locked.Contains(p.Key)) Set(p, on);
+            }
+            changed(); Fill();
+        }
+        void Fill()
+        {
+            string q = search.Text.Trim().ToLowerInvariant();
+            string category = categoryBox.SelectedIndex > 0 ? (string)categoryBox.SelectedItem : null;
+            int count = 0;
+            filling = true;
+            list.BeginUpdate(); list.Items.Clear();
+            foreach (Pair p in rows)
+            {
+                WardrobeItem item = tables.Item(p.Item);
+                bool has = Has(p);
+                if (has) count++;
+                if (ownedOnly.Checked && !has) continue;
+                if (category != null && item.Category != category) continue;
+                string style = "";
+                foreach (WardrobeVariant v in item.Variants) if (v.Id == p.Variant) style = v.Title;
+                if (q.Length > 0 && (item.Title + " " + style + " " + item.Category).ToLowerInvariant().IndexOf(q) < 0) continue;
+                ListViewItem row = new ListViewItem(new string[] { item.Title, style, item.Category, locked.Contains(p.Key) ? "wearing" : "" });
+                row.Tag = p; row.Checked = has;
+                list.Items.Add(row);
+            }
+            list.EndUpdate();
+            filling = false;
+            note.Text = "Owns " + count + " of " + rows.Count;
+        }
+    }
+
     class MainForm : Form
     {
         string dist;
@@ -561,6 +671,8 @@ namespace MpCharacterEditor
         Tables tables;
         WardrobeTables wardrobe;
         WardrobePanel storyWardrobe, onlineWardrobe;
+        OwnedPanel storyOwned;
+        readonly TabControl wardrobeTabs = new TabControl();
 
         // Story save.
         StorySave story;
@@ -733,10 +845,12 @@ namespace MpCharacterEditor
                 wardrobe = new WardrobeTables(game);
                 HashSet<long> sold = new HashSet<long>();
                 foreach (Pair p in tables.Store) sold.Add(p.Key);
-                wardrobePage.Controls.Clear(); wornPage.Controls.Clear();
-                storyWardrobe = new WardrobePanel(wardrobe, null, delegate { StoryChanged(); });
+                wardrobeTabs.TabPages.Clear(); wornPage.Controls.Clear();
+                storyWardrobe = new WardrobePanel(wardrobe, null, delegate { StoryChanged(); if (story != null) storyOwned.Show(story.Owned, story.Outfit); });
+                storyOwned = new OwnedPanel(wardrobe, wardrobe.Clothing, delegate { StoryChanged(); });
                 onlineWardrobe = new WardrobePanel(wardrobe, sold, delegate { WornChanged(); });
-                wardrobePage.Controls.Add(storyWardrobe); wornPage.Controls.Add(onlineWardrobe);
+                wardrobeTabs.TabPages.Add(Page("Wearing", storyWardrobe)); wardrobeTabs.TabPages.Add(Page("Clothing owned", storyOwned));
+                wornPage.Controls.Add(onlineWardrobe);
                 Game.Remember(dist);
             }
             catch (Exception ex)
@@ -915,6 +1029,8 @@ namespace MpCharacterEditor
             storyTabs.Dock = DockStyle.Fill;
             storyTabs.TabPages.Add(Page("Player", player));
             storyTabs.TabPages.Add(Page("Weapons", Fill(wheel, ammo)));
+            wardrobeTabs.Dock = DockStyle.Fill;
+            wardrobePage.Controls.Add(wardrobeTabs);
             storyTabs.TabPages.Add(wardrobePage);
             storyTabs.TabPages.Add(Page("Crib weapons", Fill(stashList, stashTop)));
             storyTabs.TabPages.Add(Page("Neighbourhoods", Fill(hoodList, hoodTop)));
@@ -1001,7 +1117,7 @@ namespace MpCharacterEditor
             filling = false;
             storyDirty = false;
             storySave.Enabled = true; storyRestore.Enabled = true;
-            if (storyWardrobe != null) storyWardrobe.Show(story.Outfit);
+            if (storyWardrobe != null) { storyWardrobe.Show(story.Outfit); storyOwned.Show(story.Owned, story.Outfit); }
             ShowHoods(); ShowWheel(); ShowCounts(); ShowStatus();
         }
 
@@ -1223,6 +1339,7 @@ namespace MpCharacterEditor
             }
             try
             {
+                if (wardrobe != null) story.OwnWorn(wardrobe);
                 string backup = story.Save();
                 int keep = storyBox.SelectedIndex;
                 LoadStory();
@@ -1462,6 +1579,13 @@ namespace MpCharacterEditor
                     for (int k = 0; k < s.Stash.Count; k++) if (name == "all" || s.Stash[k].Hash == GameData.Hash(name)) s.SetStash(k, value == "1");
                 }
                 else if (key.StartsWith("wear:")) Dress(s.Outfit, key, value, args[1]);
+                else if (key.StartsWith("own:"))
+                {
+                    string[] ids = key.Substring(4).Split('/');
+                    Pair p = new Pair(int.Parse(ids[0]), int.Parse(ids[1]));
+                    s.Owned.RemoveAll(delegate(Pair q) { return q.Key == p.Key; });
+                    if (value == "1") s.Owned.Add(p);
+                }
                 else if (key.StartsWith("weapon:"))
                 {
                     string name = key.Substring(7);
@@ -1471,11 +1595,17 @@ namespace MpCharacterEditor
                 }
             }
             StringBuilder sb = new StringBuilder();
-            if (changed) sb.AppendLine("saved; previous file kept as " + Path.GetFileName(s.Save()));
+            if (changed)
+            {
+                if (cliWardrobe == null) cliWardrobe = new WardrobeTables(GameNear(args[1]));
+                s.OwnWorn(cliWardrobe);
+                sb.AppendLine("saved; previous file kept as " + Path.GetFileName(s.Save()));
+            }
             sb.AppendLine("cash " + s.Cash.ToString("0.00") + ", respect " + s.Respect);
             foreach (CarriedWeapon w in s.Weapons) sb.AppendLine("weapon " + w.Name + " " + w.Clip + "/" + w.Reserve);
             sb.AppendLine("food " + string.Join(",", s.Food.ToArray()));
             sb.AppendLine("outfit " + WardrobeTables.Describe(s.Outfit));
+            sb.AppendLine("owned " + s.Owned.Count);
             int unlocked = 0;
             foreach (StashWeapon w in s.Stash) if (w.Unlocked) unlocked++;
             sb.AppendLine("stash " + unlocked + "/" + s.Stash.Count + ", homies " + s.Homies.Count + ", neighbourhoods " + s.Hoods.Count);

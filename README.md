@@ -7,8 +7,8 @@ project, Volition or Deep Silver.
 Both versions do the same things:
 
 - **Story save:** cash and respect, the weapon wheel (weapon per slot, ammo,
-  food), the wardrobe (what the player wears), the crib weapon cache,
-  neighbourhoods and homies.
+  food), the wardrobe (what the player wears and the clothing owned), the
+  crib weapon cache, neighbourhoods and homies.
 - **Cheat codes:** a list of the game's phone cheats.
 - **Online character:** cash, owned clothing, and what the character wears.
 
@@ -70,6 +70,7 @@ Both are big-endian.
 | `0x0144` | carried weapons: count, pointer to 16-byte records (name, count, loaded, spare) |
 | `0x0240` | carried food: count, pointer to names |
 | `0x064C` | outfit: count, then 16-byte records in place (item id, variant id, slot, wear option); room for 128 |
+| `0x0E50` | clothing owned: count, then 12-byte records in place (item id, variant id, 0); room for 2048 |
 | `0x6E88` | homies: count, pointer to 12-byte records (name, 0, unlocked) |
 | `0x6E90` | neighbourhoods: count, pointer to 12-byte records (name, owner, flags) |
 | `0x6F8C` | crib weapon cache: count, pointer to 8-byte records (name hash, flags) |
@@ -82,7 +83,8 @@ Both are big-endian.
 
 ### The wardrobe
 
-Pick a body slot on the left, then the item on the right. An item's wear
+Pick a body slot on the left, then the item on the right. **Clothing owned**
+is the list the game's wardrobe shows; what is worn is always in it. An item's wear
 option (hood up, rolled sleeves, which finger) decides the slot it goes in; the
 game's own slot table (`player_cust.xtbl`) says which. The slot numbers the
 saves use were read from real saves. The coat's number (7) is the one gap
