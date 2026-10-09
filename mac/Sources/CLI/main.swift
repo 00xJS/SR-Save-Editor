@@ -8,6 +8,7 @@ guard args.count >= 3 else {
            sredit set <game.dat> cash=N respect=N hood:<name|all>=<0-3> contact:<name|all>=<0|1>
                   weapon:<name>=<magazine>/<spare>|none food=<name,name,...> stash:<name|all>=<0|1>
                   wear:<item id>=<variant id>/<mesh id>   wear:<slot number>=none   own:<item id>/<variant id>=<0|1>
+                  vehicle:<car number>=<model name>|none   vehicle:add=<car number>  (another like it)
     """)
     exit(2)
 }
@@ -90,6 +91,14 @@ do {
                 for (i, s) in save.stash.enumerated() where n == "all" || s.hash == GameTables.hash(n) { save.setStash(i, unlocked: kv[1] == "1") }
             } else if kv[0].hasPrefix("wear:") { dress(&save.outfit, kv[0], kv[1], wardrobe)
             } else if kv[0].hasPrefix("own:") { own(&save.owned, kv[0], kv[1])
+            } else if kv[0].hasPrefix("vehicle:") {
+                let which = String(kv[0].dropFirst(8))
+                if which == "add", let id = UInt32(kv[1]), let i = save.vehicles.firstIndex(where: { $0.id == id }) { save.duplicateVehicle(at: i) }
+                else if let id = UInt32(which), let i = save.vehicles.firstIndex(where: { $0.id == id }) {
+                    if kv[1] == "none" { save.vehicles.remove(at: i) }
+                    else if let v = tables?.vehicle(named: kv[1]) { save.vehicles[i].hash = v.hash }
+                    else { print("vehicle: unknown model \(kv[1])") }
+                }
             } else if kv[0].hasPrefix("weapon:") {
                 let n = String(kv[0].dropFirst(7))
                 save.weapons.removeAll { $0.name == n }
@@ -107,6 +116,7 @@ do {
     print("weapons:", save.weapons.map { "\($0.name) \($0.clip)/\($0.reserve)" }.joined(separator: ", "))
     print("food:", save.food.joined(separator: ", "))
     print("outfit:", describe(save.outfit, wardrobe))
+    print("garage:", save.vehicles.map { "#\($0.id) \(tables?.vehicle(hash: $0.hash)?.title ?? String(format: "%08X", $0.hash))" }.joined(separator: ", "))
     print("owned clothing: \(save.owned.count):", save.owned.map { "\($0.item)/\($0.variant)" }.joined(separator: " "))
     print("stash:", save.stash.map { "\(tables?.name(hash: $0.hash) ?? String($0.hash, radix: 16))\($0.unlocked ? "*" : "")" }.joined(separator: ", "))
     print("contacts:", save.contacts.map { "\($0.name)\($0.unlocked ? "*" : "")" }.joined(separator: ", "))

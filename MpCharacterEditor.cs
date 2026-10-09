@@ -672,6 +672,9 @@ namespace MpCharacterEditor
         WardrobeTables wardrobe;
         WardrobePanel storyWardrobe, onlineWardrobe;
         OwnedPanel storyOwned;
+        readonly ListView garageList = new ListView();
+        readonly ComboBox modelBox = new ComboBox();
+        readonly Label garageNote = new Label();
         readonly TabControl wardrobeTabs = new TabControl();
 
         // Story save.
@@ -1032,6 +1035,7 @@ namespace MpCharacterEditor
             wardrobeTabs.Dock = DockStyle.Fill;
             wardrobePage.Controls.Add(wardrobeTabs);
             storyTabs.TabPages.Add(wardrobePage);
+            storyTabs.TabPages.Add(Page("Garage", BuildGarage()));
             storyTabs.TabPages.Add(Page("Crib weapons", Fill(stashList, stashTop)));
             storyTabs.TabPages.Add(Page("Neighbourhoods", Fill(hoodList, hoodTop)));
             storyTabs.TabPages.Add(Page("Homies", Fill(homieList, homieTop)));
@@ -1118,7 +1122,65 @@ namespace MpCharacterEditor
             storyDirty = false;
             storySave.Enabled = true; storyRestore.Enabled = true;
             if (storyWardrobe != null) { storyWardrobe.Show(story.Outfit); storyOwned.Show(story.Owned, story.Outfit); }
-            ShowHoods(); ShowWheel(); ShowCounts(); ShowStatus();
+            ShowHoods(); ShowWheel(); ShowCounts(); ShowGarage(); ShowStatus();
+        }
+
+        // ---- Garage ----
+
+        Control BuildGarage()
+        {
+            FlowLayoutPanel top = Row();
+            garageNote.AutoSize = true; garageNote.Margin = new Padding(6, 7, 12, 0);
+            top.Controls.Add(garageNote);
+            Button another = new Button(), remove = new Button();
+            another.Text = "Another like it"; another.AutoSize = true;
+            another.Click += delegate { if (story != null && garageList.SelectedIndices.Count > 0) { story.DuplicateVehicle(garageList.SelectedIndices[0]); StoryChanged(); ShowGarage(); } };
+            remove.Text = "Remove"; remove.AutoSize = true;
+            remove.Click += delegate { if (story != null && garageList.SelectedIndices.Count > 0) { story.Vehicles.RemoveAt(garageList.SelectedIndices[0]); StoryChanged(); ShowGarage(); } };
+            top.Controls.Add(another); top.Controls.Add(remove);
+            top.Controls.Add(Caption("Change to"));
+            modelBox.DropDownStyle = ComboBoxStyle.DropDownList; modelBox.Width = 260;
+            modelBox.SelectedIndexChanged += delegate
+            {
+                if (filling || story == null || garageList.SelectedIndices.Count == 0 || modelBox.SelectedItem == null) return;
+                story.Vehicles[garageList.SelectedIndices[0]].Hash = ((VehicleInfo)modelBox.SelectedItem).Hash;
+                StoryChanged(); ShowGarage();
+            };
+            top.Controls.Add(modelBox);
+            SetUpList(garageList, false, "Car", 90, "Vehicle", 220, "Kind", 180, "Model name", 200);
+            garageList.MultiSelect = false;
+            garageList.SelectedIndexChanged += delegate
+            {
+                if (story == null || garageList.SelectedIndices.Count == 0) return;
+                filling = true;
+                modelBox.SelectedItem = game.Vehicle(story.Vehicles[garageList.SelectedIndices[0]].Hash);
+                filling = false;
+            };
+            Panel p = Fill(garageList, top);
+            Label hint = new Label();
+            hint.Dock = DockStyle.Bottom; hint.AutoSize = false; hint.Height = 24; hint.Padding = new Padding(8, 4, 0, 0); hint.ForeColor = SystemColors.GrayText;
+            hint.Text = "Another keeps the paint and parts; a new model keeps them too, and the game may reset ones that don't fit.";
+            p.Controls.Add(hint);
+            return p;
+        }
+
+        void ShowGarage()
+        {
+            if (story == null) return;
+            int selected = garageList.SelectedIndices.Count > 0 ? garageList.SelectedIndices[0] : -1;
+            if (modelBox.Items.Count == 0 && game != null)
+                foreach (VehicleInfo v in game.Vehicles) modelBox.Items.Add(v);
+            garageList.BeginUpdate();
+            garageList.Items.Clear();
+            foreach (GarageVehicle v in story.Vehicles)
+            {
+                VehicleInfo info = game == null ? null : game.Vehicle(v.Hash);
+                garageList.Items.Add(new ListViewItem(new string[] { "#" + v.Id, info != null ? info.Title : "Unknown " + v.Hash.ToString("X8"),
+                    info != null ? info.Category : "", info != null ? info.Name : "" }));
+            }
+            if (selected >= 0 && selected < garageList.Items.Count) garageList.Items[selected].Selected = true;
+            garageList.EndUpdate();
+            garageNote.Text = story.Vehicles.Count + " in the garage";
         }
 
         void StoryChanged()
@@ -1579,6 +1641,16 @@ namespace MpCharacterEditor
                     for (int k = 0; k < s.Stash.Count; k++) if (name == "all" || s.Stash[k].Hash == GameData.Hash(name)) s.SetStash(k, value == "1");
                 }
                 else if (key.StartsWith("wear:")) Dress(s.Outfit, key, value, args[1]);
+                else if (key.StartsWith("vehicle:"))
+                {
+                    string which = key.Substring(8);
+                    int at = -1;
+                    for (int k = 0; k < s.Vehicles.Count; k++) if (s.Vehicles[k].Id.ToString() == (which == "add" ? value : which)) at = k;
+                    if (at < 0) continue;
+                    if (which == "add") s.DuplicateVehicle(at);
+                    else if (value == "none") s.Vehicles.RemoveAt(at);
+                    else { VehicleInfo v = GameNear(args[1]).VehicleNamed(value); if (v != null) s.Vehicles[at].Hash = v.Hash; }
+                }
                 else if (key.StartsWith("own:"))
                 {
                     string[] ids = key.Substring(4).Split('/');
@@ -1606,6 +1678,9 @@ namespace MpCharacterEditor
             sb.AppendLine("food " + string.Join(",", s.Food.ToArray()));
             sb.AppendLine("outfit " + WardrobeTables.Describe(s.Outfit));
             sb.AppendLine("owned " + s.Owned.Count);
+            StringBuilder g = new StringBuilder();
+            foreach (GarageVehicle v in s.Vehicles) g.Append('#').Append(v.Id).Append(' ').Append(v.Hash.ToString("x8")).Append(' ');
+            sb.AppendLine("garage " + g);
             int unlocked = 0;
             foreach (StashWeapon w in s.Stash) if (w.Unlocked) unlocked++;
             sb.AppendLine("stash " + unlocked + "/" + s.Stash.Count + ", homies " + s.Homies.Count + ", neighbourhoods " + s.Hoods.Count);

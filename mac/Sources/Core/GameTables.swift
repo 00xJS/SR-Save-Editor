@@ -4,6 +4,7 @@ import Foundation
 
 struct WeaponInfo { let name, title, weaponClass: String; let magazine, maxRounds: Int; let slot: Int }
 struct CheatInfo: Identifiable { let id: Int; let name, number, category: String }
+struct VehicleInfo: Identifiable { let name, title, category: String; var id: String { name }; var hash: UInt32 { GameTables.hash(name) } }
 
 final class GameTables {
     /// Wheel slots, clockwise from the top.
@@ -16,6 +17,8 @@ final class GameTables {
     private(set) var offered: [String] = []                  // sold in stores or kept at the crib
     private(set) var food: [String] = []
     private(set) var cheats: [CheatInfo] = []
+    private(set) var vehicles: [VehicleInfo] = []
+    private var vehicleByHash: [UInt32: VehicleInfo] = [:]
     private(set) var homieTitles: [String: String] = [:]
     private var hashed: [UInt32: String] = [:]
     let pack: Packfile
@@ -62,6 +65,12 @@ final class GameTables {
                 hashed[Self.hash(w)] = w
             }
         }
+        for block in blocks("vehicles.xtbl", "Vehicle") {
+            guard let n = tag(block, "Name") else { continue }
+            let v = VehicleInfo(name: n, title: tag(block, "Display_Name") ?? n, category: tag(block, "Category") ?? "")
+            vehicles.append(v); vehicleByHash[v.hash] = v
+        }
+        vehicles.sort { $0.title < $1.title }
         for block in blocks("drugs.xtbl", "Drug") { if let n = tag(block, "Name") { food.append(n) } }
         for block in blocks("homies.xtbl", "Homie") {
             if let n = tag(block, "Name"), let t = tag(block, "Display_Name") { homieTitles[n] = strings[t] ?? t }
@@ -92,6 +101,8 @@ final class GameTables {
     func weapon(_ name: String) -> WeaponInfo? { weapons[name.lowercased()] }
     func choices(slot: Int) -> [WeaponInfo] { offered.compactMap { weapons[$0] }.filter { $0.slot == slot } }
     func name(hash: UInt32) -> String? { hashed[hash] }
+    func vehicle(hash: UInt32) -> VehicleInfo? { vehicleByHash[hash] }
+    func vehicle(named name: String) -> VehicleInfo? { vehicles.first { $0.name.lowercased() == name.lowercased() } }
 
     /// The game's name hash: CRC-32 (reflected, start 0, no final inversion) of the lower-case name.
     static func hash(_ name: String) -> UInt32 {

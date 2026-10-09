@@ -38,6 +38,9 @@ run_both wear:228=205/203 wear:331=53/32 wear:192=348/497 wear:1=none
 run_both wear:228=206/203 wear:7=none
 # Clothing owned: buy a puffy coat, give up the cowboy hat, put on a hat that was not owned.
 run_both own:333/80=1 own:224/193=0 wear:224=193/198
+# Garage: another of the last car, a new model for one, one gone; then again once the garage is in our block.
+run_both vehicle:add=5 vehicle:4=car_2dr_sports04 vehicle:2=none
+run_both vehicle:1=none cash=4242
 
 # The online character, when one is next to the save.
 MP="$(dirname "$SAVE")/3_MPStorage"

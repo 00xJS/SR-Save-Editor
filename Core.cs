@@ -10,6 +10,8 @@
 //   0x064C  outfit: count, then 16-byte records in the header (item, variant, slot, wear option)
 //   0x0E50  clothing owned: count, then 12-byte records in the header (item, variant, 0); room for 2048
 //   0x6E88  homies: count, pointer to 12-byte records (name, 0, unlocked)
+//   0x6E98  garage: count, pointer to 1160-byte records (0, car number, model name hash, garage, paint and parts...)
+//   0x6EA0  the next car number
 //   0x6E90  neighbourhoods: count, pointer to 12-byte records (name, owner, flags)
 //   0x6F8C  crib weapon cache: count, pointer to 8-byte records (name hash, flags)
 
@@ -121,6 +123,11 @@ namespace MpCharacterEditor
     }
 
     class WeaponInfo { public string Name, Title, Class; public int Magazine, MaxRounds, Slot; }
+    class VehicleInfo
+    {
+        public string Name, Title, Category; public uint Hash;
+        public override string ToString() { return Title + "  (" + Category + ")"; }
+    }
     class CheatInfo { public string Name, Number, Category; }
 
     // Names and limits read from the player's own game files (misc.vpp_xbox2).
@@ -134,6 +141,8 @@ namespace MpCharacterEditor
         public readonly List<string> Offered = new List<string>();   // sold in stores or kept at the crib
         public readonly List<string> Food = new List<string>();
         public readonly List<CheatInfo> Cheats = new List<CheatInfo>();
+        public readonly List<VehicleInfo> Vehicles = new List<VehicleInfo>();   // by display name
+        readonly Dictionary<uint, VehicleInfo> vehicleByHash = new Dictionary<uint, VehicleInfo>();
         public readonly Dictionary<string, string> HomieTitles = new Dictionary<string, string>();
         readonly Dictionary<uint, string> hashed = new Dictionary<uint, string>();
 
@@ -191,6 +200,15 @@ namespace MpCharacterEditor
                 string n = Tag(block, "Name");
                 if (n != null) Food.Add(n);
             }
+            foreach (string block in Blocks("vehicles.xtbl", "Vehicle"))
+            {
+                string n = Tag(block, "Name");
+                if (n == null) continue;
+                VehicleInfo v = new VehicleInfo();
+                v.Name = n; v.Title = Tag(block, "Display_Name") ?? n; v.Category = Tag(block, "Category") ?? ""; v.Hash = Hash(n);
+                Vehicles.Add(v); vehicleByHash[v.Hash] = v;
+            }
+            Vehicles.Sort(delegate(VehicleInfo a, VehicleInfo b) { return string.CompareOrdinal(a.Title, b.Title); });
             foreach (string block in Blocks("homies.xtbl", "Homie"))
             {
                 string n = Tag(block, "Name"), t = Tag(block, "Display_Name"), s;
@@ -259,6 +277,16 @@ namespace MpCharacterEditor
             List<WeaponInfo> list = new List<WeaponInfo>();
             foreach (string n in Offered) if (Weapons[n].Slot == slot) list.Add(Weapons[n]);
             return list;
+        }
+        public VehicleInfo Vehicle(uint hash)
+        {
+            VehicleInfo v;
+            return vehicleByHash.TryGetValue(hash, out v) ? v : null;
+        }
+        public VehicleInfo VehicleNamed(string name)
+        {
+            foreach (VehicleInfo v in Vehicles) if (string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase)) return v;
+            return null;
         }
         public string NameOfHash(uint hash)
         {
@@ -657,6 +685,17 @@ namespace MpCharacterEditor
     class Neighbourhood { public string Name; public int OwnerAt; public uint Owner; }
     class Homie { public string Name; public int FlagAt; public bool Unlocked; }
     class StashWeapon { public uint Hash; public int FlagAt; public bool Unlocked; }
+    // A car in the garage: 1160 bytes the game wrote. The first words are 0, the car's number,
+    // the name hash of the model, and a garage number; the rest is paint, parts and condition.
+    class GarageVehicle
+    {
+        public const int Size = 0x488;
+        public byte[] Raw;
+        public GarageVehicle(byte[] raw) { Raw = raw; }
+        public uint Id { get { return Be.U32(Raw, 4); } set { Be.Put(Raw, 4, value); } }
+        public uint Hash { get { return Be.U32(Raw, 8); } set { Be.Put(Raw, 8, value); } }
+        public GarageVehicle Copy() { return new GarageVehicle((byte[])Raw.Clone()); }
+    }
     class CarriedWeapon
     {
         public string Name; public uint Count = 1, Clip, Reserve;
@@ -669,6 +708,9 @@ namespace MpCharacterEditor
         const int RespectAt = 0x90, RespectTotalAt = 0x94, RespectNeededAt = 0x98, CashAt = 0xA0;
         // (count, pointer) pairs in the header.
         const int WeaponsAt = 0x144, FoodAt = 0x240, HomiesAt = 0x6E88, HoodsAt = 0x6E90, StashAt = 0x6F8C, EndPointerAt = 0x6FF8;
+        // The garage: count and pointer to 1160-byte records; the next car number; and the list that
+        // follows the garage in the game's own layout (so a garage pointer past it is one this editor placed).
+        const int GarageAt = 0x6E98, NextVehicleAt = 0x6EA0, AfterGarageAt = 0x6EA8;
         // What the player wears: count, then 16-byte records in the header (room for 128).
         const int OutfitCountAt = 0x64C, OutfitAt = 0x650;
         // Clothing owned: count, then 12-byte records (item, variant, 0) in the header (room for 2048).
@@ -683,6 +725,8 @@ namespace MpCharacterEditor
         // Weapons on the wheel (name, loaded, spare ammo) and the food carried, in file order.
         public List<CarriedWeapon> Weapons = new List<CarriedWeapon>();
         public List<string> Food = new List<string>();
+        // The cars in the garage, in the game's order.
+        public List<GarageVehicle> Vehicles = new List<GarageVehicle>();
         // What the player wears, one record per body slot.
         public List<WornItem> Outfit = new List<WornItem>();
         // Clothing owned (bought or worn), in the game's order.
@@ -711,6 +755,13 @@ namespace MpCharacterEditor
                 {
                     string n = NameAt(U32(at + i * 4));
                     if (n != null) Food.Add(n);
+                }
+            if (List(GarageAt, GarageVehicle.Size, 128, out count, out at))
+                for (int i = 0; i < count; i++)
+                {
+                    byte[] raw = new byte[GarageVehicle.Size];
+                    Buffer.BlockCopy(data, at + i * GarageVehicle.Size, raw, 0, GarageVehicle.Size);
+                    Vehicles.Add(new GarageVehicle(raw));
                 }
             loaded = Inventory();
             Outfit = WardrobeTables.Read(data, OutfitCountAt, OutfitAt, WardrobeTables.MaxWorn);
@@ -788,6 +839,8 @@ namespace MpCharacterEditor
             foreach (CarriedWeapon w in Weapons) sb.Append(w.Name).Append(':').Append(w.Count).Append(':').Append(w.Clip).Append(':').Append(w.Reserve).Append(';');
             sb.Append('|');
             foreach (string f in Food) sb.Append(f).Append(';');
+            sb.Append('|');
+            foreach (GarageVehicle v in Vehicles) sb.Append(Convert.ToBase64String(v.Raw)).Append(';');
             return sb.ToString();
         }
 
@@ -823,15 +876,31 @@ namespace MpCharacterEditor
             Be.Put(data, Stash[index].FlagAt, unlocked ? old | UnlockedFlag : old & ~UnlockedFlag);
         }
 
-        // Puts the weapon and food lists after the game's own data. The game follows the
-        // pointers, so the lists may sit anywhere; the file grows in steps of 2048 bytes.
+        // Another car like this one, with the next free number.
+        public void DuplicateVehicle(int index)
+        {
+            if (index < 0 || index >= Vehicles.Count) return;
+            GarageVehicle v = Vehicles[index].Copy();
+            v.Id = U32(NextVehicleAt);
+            Be.Put(data, NextVehicleAt, v.Id + 1);
+            Vehicles.Add(v);
+        }
+
+        // Puts the weapon and food lists, and the garage once it has been changed, after the
+        // game's own data. The game follows the pointers, so the lists may sit anywhere; the
+        // file grows in steps of 2048 bytes.
         void WriteInventory()
         {
-            if (Inventory() == loaded) return;
+            string now = Inventory();
+            if (now == loaded) return;
+            // A garage this editor placed earlier sits past the list that follows it in the game's layout.
+            bool garageOurs = U32(GarageAt + 4) > U32(AfterGarageAt);
+            bool garageChanged = now.Substring(now.LastIndexOf('|')) != loaded.Substring(loaded.LastIndexOf('|'));
             // Lists this editor wrote earlier sit after everything else; write over them.
             int firstTable = (int)U32(HomiesAt + 4);
             int start = int.MaxValue;
             foreach (int p in new int[] { (int)U32(WeaponsAt + 4), (int)U32(FoodAt + 4) }) if (p > firstTable && p < start) start = p;
+            if (garageOurs && (int)U32(GarageAt + 4) < start) start = (int)U32(GarageAt + 4);
             if (start == int.MaxValue) start = (int)U32(EndPointerAt);
             if (start < 0x7000 || start > data.Length) return;
 
@@ -847,6 +916,13 @@ namespace MpCharacterEditor
             int foodPointer = start + block.Count;
             foreach (uint n in foodNames) Add(block, n);
             while (block.Count % 16 != 0) block.Add(0);
+            int garagePointer = -1;
+            if (garageOurs || garageChanged)
+            {
+                garagePointer = start + block.Count;
+                foreach (GarageVehicle v in Vehicles) block.AddRange(v.Raw);
+                while (block.Count % 16 != 0) block.Add(0);
+            }
 
             int end = start + block.Count;
             byte[] result = new byte[Math.Max(0x8800, (end + 0x7FF) & ~0x7FF)];
@@ -855,6 +931,7 @@ namespace MpCharacterEditor
             data = result;
             Be.Put(data, WeaponsAt, (uint)Weapons.Count); Be.Put(data, WeaponsAt + 4, (uint)weaponsPointer);
             Be.Put(data, FoodAt, (uint)Food.Count); Be.Put(data, FoodAt + 4, (uint)foodPointer);
+            if (garagePointer >= 0) { Be.Put(data, GarageAt, (uint)Vehicles.Count); Be.Put(data, GarageAt + 4, (uint)garagePointer); }
             Be.Put(data, EndPointerAt, (uint)end);
             loaded = Inventory();
         }

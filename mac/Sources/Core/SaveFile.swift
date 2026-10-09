@@ -9,6 +9,16 @@ struct Neighbourhood { let name: String; let ownerOffset: Int; var owner: UInt32
 struct Contact { let name: String; let flagOffset: Int; var unlocked: Bool }
 struct CarriedWeapon: Equatable { var name: String; var count: UInt32 = 1; var clip: UInt32; var reserve: UInt32 }
 struct StashWeapon { let hash: UInt32; let flagOffset: Int; var unlocked: Bool }
+/// A car in the garage: 1160 bytes the game wrote. The first words are 0, the car's number,
+/// the name hash of the model, and a garage number; the rest is paint, parts and condition.
+struct GarageVehicle: Equatable {
+    static let size = 0x488
+    var raw: [UInt8]
+    private func word(_ o: Int) -> UInt32 { UInt32(raw[o]) << 24 | UInt32(raw[o + 1]) << 16 | UInt32(raw[o + 2]) << 8 | UInt32(raw[o + 3]) }
+    private mutating func set(_ o: Int, _ v: UInt32) { raw[o] = UInt8(v >> 24); raw[o + 1] = UInt8((v >> 16) & 255); raw[o + 2] = UInt8((v >> 8) & 255); raw[o + 3] = UInt8(v & 255) }
+    var id: UInt32 { get { word(4) } set { set(4, newValue) } }
+    var hash: UInt32 { get { word(8) } set { set(8, newValue) } }
+}
 
 final class SinglePlayerSave {
     static let gangs: [UInt32: String] = [0: "3rd Street Saints", 1: "Los Carnales", 2: "Vice Kings", 3: "Westside Rollerz"]
@@ -16,6 +26,9 @@ final class SinglePlayerSave {
     // (count, pointer) pairs in the header.
     private static let weaponsAt = 0x144, foodAt = 0x240, contactsAt = 0x6E88, hoodsAt = 0x6E90, stashAt = 0x6F8C
     private static let endPointerAt = 0x6FF8
+    // The garage: count and pointer to 1160-byte records; the next car number; and the list
+    // that follows the garage in the game's own layout (so a garage pointer past it is one this editor placed).
+    private static let garageAt = 0x6E98, nextVehicleAt = 0x6EA0, afterGarageAt = 0x6EA8
     // What the player wears: count, then 16-byte records in the header (room for 128).
     private static let outfitCountAt = 0x64C, outfitAt = 0x650
     // Clothing owned: count, then 12-byte records (item, variant, 0) in the header (room for 2048).
@@ -30,6 +43,9 @@ final class SinglePlayerSave {
     /// Weapons on the wheel (name, magazine, spare ammo) and the food carried, in file order.
     var weapons: [CarriedWeapon] = []
     var food: [String] = []
+    /// The cars in the garage, in the game's order.
+    var vehicles: [GarageVehicle] = []
+    private var loadedVehicles: [GarageVehicle] = []
     /// What the player wears, one record per body slot.
     var outfit: [WornItem] = []
     /// Clothing owned (bought or worn), in the game's order.
@@ -80,7 +96,10 @@ final class SinglePlayerSave {
         if let l = list(Self.foodAt, recordSize: 4, limit: 64) {
             for i in 0..<l.count { if let n = name(at: u32(l.pointer + i * 4)) { food.append(n) } }
         }
-        loadedWeapons = weapons; loadedFood = food
+        if let l = list(Self.garageAt, recordSize: GarageVehicle.size, limit: 128) {
+            for i in 0..<l.count { vehicles.append(GarageVehicle(raw: Array(data[l.pointer + i * GarageVehicle.size..<l.pointer + (i + 1) * GarageVehicle.size]))) }
+        }
+        loadedWeapons = weapons; loadedFood = food; loadedVehicles = vehicles
         outfit = [WornItem].read(u32, countAt: Self.outfitCountAt, at: Self.outfitAt, max: WardrobeTables.maxWorn)
         loadedOutfit = outfit
         for k in 0..<Int(min(u32(Self.ownedCountAt), UInt32(Self.ownedMax))) {
@@ -134,13 +153,27 @@ final class SinglePlayerSave {
         setU32(stash[index].flagOffset, unlocked ? old | Self.unlockedFlag : old & ~Self.unlockedFlag)
     }
 
-    /// Puts the weapon and food lists after the game's own data. The game follows the
-    /// pointers, so the lists may sit anywhere; the file grows in steps of 2048 bytes.
+    /// Another car like this one, with the next free number.
+    func duplicateVehicle(at index: Int) {
+        guard vehicles.indices.contains(index) else { return }
+        var v = vehicles[index]
+        v.id = u32(Self.nextVehicleAt)
+        setU32(Self.nextVehicleAt, v.id + 1)
+        vehicles.append(v)
+    }
+
+    /// Puts the weapon and food lists, and the garage once it has been changed, after the
+    /// game's own data. The game follows the pointers, so the lists may sit anywhere; the
+    /// file grows in steps of 2048 bytes.
     private func writeInventory() {
-        guard weapons != loadedWeapons || food != loadedFood else { return }
+        // A garage this editor placed earlier sits past the list that follows it in the game's layout.
+        let garageOurs = u32(Self.garageAt + 4) > u32(Self.afterGarageAt)
+        let garageChanged = vehicles != loadedVehicles
+        guard weapons != loadedWeapons || food != loadedFood || garageChanged else { return }
         // Lists this editor wrote earlier sit after everything else; write over them.
         let firstTable = Int(u32(Self.contactsAt + 4))
-        let ours = [Int(u32(Self.weaponsAt + 4)), Int(u32(Self.foodAt + 4))].filter { $0 > firstTable }
+        var ours = [Int(u32(Self.weaponsAt + 4)), Int(u32(Self.foodAt + 4))].filter { $0 > firstTable }
+        if garageOurs { ours.append(Int(u32(Self.garageAt + 4))) }
         let start = ours.min() ?? Int(u32(Self.endPointerAt))
         guard start >= 0x7000, start <= data.count else { return }
 
@@ -158,6 +191,12 @@ final class SinglePlayerSave {
         let foodPointer = start + block.count
         for n in foodNames { block += Self.bytes(n) }
         pad()
+        var garagePointer: Int? = nil
+        if garageOurs || garageChanged {
+            garagePointer = start + block.count
+            for v in vehicles { block += v.raw }
+            pad()
+        }
 
         let end = start + block.count
         var out = Data(data.prefix(start))
@@ -166,8 +205,9 @@ final class SinglePlayerSave {
         data = out
         setU32(Self.weaponsAt, UInt32(weapons.count)); setU32(Self.weaponsAt + 4, UInt32(weaponsPointer))
         setU32(Self.foodAt, UInt32(food.count)); setU32(Self.foodAt + 4, UInt32(foodPointer))
+        if let g = garagePointer { setU32(Self.garageAt, UInt32(vehicles.count)); setU32(Self.garageAt + 4, UInt32(g)) }
         setU32(Self.endPointerAt, UInt32(end))
-        loadedWeapons = weapons; loadedFood = food
+        loadedWeapons = weapons; loadedFood = food; loadedVehicles = vehicles
     }
 
     /// Writes the save, keeping the previous file next to it as game.dat.<date>-<time>.bak.

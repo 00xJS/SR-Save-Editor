@@ -8,7 +8,7 @@ Both versions do the same things:
 
 - **Story save:** cash and respect, the weapon wheel (weapon per slot, ammo,
   food), the wardrobe (what the player wears and the clothing owned), the
-  crib weapon cache, neighbourhoods and homies.
+  garage, the crib weapon cache, neighbourhoods and homies.
 - **Cheat codes:** a list of the game's phone cheats.
 - **Online character:** cash, owned clothing, and what the character wears.
 
@@ -72,6 +72,7 @@ Both are big-endian.
 | `0x064C` | outfit: count, then 16-byte records in place (item id, variant id, slot, wear option); room for 128 |
 | `0x0E50` | clothing owned: count, then 12-byte records in place (item id, variant id, 0); room for 2048 |
 | `0x6E88` | homies: count, pointer to 12-byte records (name, 0, unlocked) |
+| `0x6E98` | garage: count, pointer to 1160-byte records (0, car number, model name hash, garage, then paint, parts and condition); `0x6EA0` is the next car number |
 | `0x6E90` | neighbourhoods: count, pointer to 12-byte records (name, owner, flags) |
 | `0x6F8C` | crib weapon cache: count, pointer to 8-byte records (name hash, flags) |
 
@@ -92,6 +93,14 @@ between the shirts and the underwear and has not been seen in a save yet; if a
 coat put on with the editor is gone when the game loads, that is why. Belts,
 piercings, tattoos and skin are left as they are, because their numbers are
 not known yet.
+
+### The garage
+
+The cars are listed by name. **Another like it** adds a copy with the next
+car number; **Remove** takes one out; the model can be changed. A copy or a
+changed model keeps the paint and parts of the car it came from, and the game
+may reset ones that don't fit the new model. The editor doesn't yet read the
+paint and parts themselves.
 
 ## Fair play
 

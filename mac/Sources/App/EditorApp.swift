@@ -325,13 +325,14 @@ struct WeaponWheel: View {
 // MARK: - Screens
 
 enum Screen: String, CaseIterable, Identifiable {
-    case player = "Player", weapons = "Weapons", wardrobe = "Wardrobe", stash = "Crib weapons", hoods = "Neighbourhoods", homies = "Homies", cheats = "Cheat codes", online = "Online character"
+    case player = "Player", weapons = "Weapons", wardrobe = "Wardrobe", garage = "Garage", stash = "Crib weapons", hoods = "Neighbourhoods", homies = "Homies", cheats = "Cheat codes", online = "Online character"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .player: return "person.fill"
         case .weapons: return "scope"
         case .wardrobe: return "tshirt.fill"
+        case .garage: return "car.fill"
         case .stash: return "shippingbox.fill"
         case .hoods: return "map.fill"
         case .homies: return "person.2.fill"
@@ -339,7 +340,7 @@ enum Screen: String, CaseIterable, Identifiable {
         case .online: return "globe"
         }
     }
-    static let story: [Screen] = [.player, .weapons, .wardrobe, .stash, .hoods, .homies, .cheats]
+    static let story: [Screen] = [.player, .weapons, .wardrobe, .garage, .stash, .hoods, .homies, .cheats]
 }
 
 struct ContentView: View {
@@ -384,6 +385,7 @@ struct ContentView: View {
                             switch screen {
                             case .weapons: weaponsScreen
                             case .wardrobe: wardrobeScreen
+                            case .garage: garageScreen(save)
                             case .stash: stashScreen(save)
                             case .hoods: hoodsScreen(save)
                             case .homies: homiesScreen(save)
@@ -469,6 +471,30 @@ struct ContentView: View {
                     OwnedListView(choices: w.clothing, owned: $editor.storyOwned, locked: Set(editor.outfit.filter { w.isClothing($0.item) }.map { ClothingPair(item: $0.item, variant: $0.variant) }),
                                   note: "Bought in the story. What is worn stays owned.") { editor.touch() }
                 }
+            }
+        } else { needsGameFiles }
+    }
+
+    @ViewBuilder func garageScreen(_ save: SinglePlayerSave) -> some View {
+        if let tables = editor.tables {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("\(save.vehicles.count) in the garage. Another keeps the paint and parts; a new model keeps them too, and the game may reset ones that don't fit.").foregroundColor(.secondary)
+                    Spacer()
+                }.padding(10)
+                List(Array(save.vehicles.enumerated()), id: \.offset) { i, v in
+                    HStack {
+                        Text("#\(v.id)").foregroundColor(.secondary).frame(width: 40, alignment: .leading)
+                        Picker("", selection: Binding(get: { v.hash }, set: { save.vehicles[i].hash = $0; editor.touch() })) {
+                            if tables.vehicle(hash: v.hash) == nil { Text(String(format: "Unknown %08X", v.hash)).tag(v.hash) }
+                            ForEach(tables.vehicles) { Text("\($0.title)  (\($0.category))").tag($0.hash) }
+                        }.labelsHidden().frame(width: 320)
+                        Text(tables.vehicle(hash: v.hash)?.name ?? "").foregroundColor(.secondary)
+                        Spacer()
+                        Button("Another") { save.duplicateVehicle(at: i); editor.touch() }
+                        Button("Remove") { save.vehicles.remove(at: i); editor.touch() }
+                    }
+                }.id(editor.revision)
             }
         } else { needsGameFiles }
     }
