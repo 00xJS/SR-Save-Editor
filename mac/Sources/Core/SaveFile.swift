@@ -18,6 +18,30 @@ struct GarageVehicle: Equatable {
     private mutating func set(_ o: Int, _ v: UInt32) { raw[o] = UInt8(v >> 24); raw[o + 1] = UInt8((v >> 16) & 255); raw[o + 2] = UInt8((v >> 8) & 255); raw[o + 3] = UInt8(v & 255) }
     var id: UInt32 { get { word(4) } set { set(4, newValue) } }
     var hash: UInt32 { get { word(8) } set { set(8, newValue) } }
+    // Condition: the repair bill (a float), the hit points, then a count of part values and the
+    // values: body panels up to a fifth of the hit points, tyres 450, glass 1, and larger ones
+    // for the engine and doors. Damage flags follow at 0x268, and the dents at 0x2A4 (a count).
+    private static let billAt = 0x158, hitpointsAt = 0x15C, partCountAt = 0x160, partsAt = 0x164, flagsAt = 0x268, flagsEnd = 0x288, dentsAt = 0x2A4
+    var repairBill: Float { Float(bitPattern: word(Self.billAt)) }
+    var hitpoints: UInt32 { word(Self.hitpointsAt) }
+    var dents: UInt32 { word(Self.dentsAt) }
+    func damaged(maxHitpoints: UInt32) -> Bool { hitpoints < maxHitpoints || repairBill > 0 || dents > 0 }
+    /// As the mechanic leaves it: full hit points, no bill, no dents, every part back up.
+    /// The save does not say what kind each part is, so a damaged part is raised to the
+    /// largest value its kind could have; the game holds each to its own maximum.
+    /// A part at 1 or 450 is left alone: those are whole glass and whole tyres (or, rarely,
+    /// a panel knocked down to 1).
+    mutating func repair(maxHitpoints max: UInt32) {
+        set(Self.billAt, 0); set(Self.hitpointsAt, max); set(Self.dentsAt, 0)
+        let part = max / 5
+        for k in 0..<Int(min(word(Self.partCountAt), 64)) {
+            let o = Self.partsAt + 4 * k, v = word(o)
+            if v == 1 || v == 450 { continue }
+            else if v <= part { set(o, part) }                        // a body panel, or a part knocked to 0
+            else if v <= 50000 { set(o, 50000) } else { set(o, 100000) }
+        }
+        for o in stride(from: Self.flagsAt, to: Self.flagsEnd, by: 4) { set(o, 0) }
+    }
 }
 
 final class SinglePlayerSave {

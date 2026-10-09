@@ -1132,7 +1132,16 @@ namespace MpCharacterEditor
             FlowLayoutPanel top = Row();
             garageNote.AutoSize = true; garageNote.Margin = new Padding(6, 7, 12, 0);
             top.Controls.Add(garageNote);
-            Button another = new Button(), remove = new Button();
+            Button another = new Button(), remove = new Button(), repair = new Button();
+            repair.Text = "Repair"; repair.AutoSize = true;
+            repair.Click += delegate
+            {
+                if (story == null || garageList.SelectedIndices.Count == 0) return;
+                GarageVehicle v = story.Vehicles[garageList.SelectedIndices[0]];
+                VehicleInfo info = game.Vehicle(v.Hash);
+                v.Repair(info != null ? info.MaxHitpoints : 50000); StoryChanged(); ShowGarage();
+            };
+            top.Controls.Add(repair);
             another.Text = "Another like it"; another.AutoSize = true;
             another.Click += delegate { if (story != null && garageList.SelectedIndices.Count > 0) { story.DuplicateVehicle(garageList.SelectedIndices[0]); StoryChanged(); ShowGarage(); } };
             remove.Text = "Remove"; remove.AutoSize = true;
@@ -1147,7 +1156,7 @@ namespace MpCharacterEditor
                 StoryChanged(); ShowGarage();
             };
             top.Controls.Add(modelBox);
-            SetUpList(garageList, false, "Car", 90, "Vehicle", 220, "Kind", 180, "Model name", 200);
+            SetUpList(garageList, false, "Car", 60, "Vehicle", 180, "Condition", 150, "Kind", 160, "Model name", 180);
             garageList.MultiSelect = false;
             garageList.SelectedIndexChanged += delegate
             {
@@ -1175,8 +1184,10 @@ namespace MpCharacterEditor
             foreach (GarageVehicle v in story.Vehicles)
             {
                 VehicleInfo info = game == null ? null : game.Vehicle(v.Hash);
+                uint max = info != null ? info.MaxHitpoints : 50000;
+                string condition = !v.Damaged(max) ? "Mint" : (100 * v.Hitpoints / max) + "%" + (v.RepairBill > 0 ? ", $" + v.RepairBill.ToString("0") + " to fix" : "");
                 garageList.Items.Add(new ListViewItem(new string[] { "#" + v.Id, info != null ? info.Title : "Unknown " + v.Hash.ToString("X8"),
-                    info != null ? info.Category : "", info != null ? info.Name : "" }));
+                    condition, info != null ? info.Category : "", info != null ? info.Name : "" }));
             }
             if (selected >= 0 && selected < garageList.Items.Count) garageList.Items[selected].Selected = true;
             garageList.EndUpdate();
@@ -1649,6 +1660,7 @@ namespace MpCharacterEditor
                     if (at < 0) continue;
                     if (which == "add") s.DuplicateVehicle(at);
                     else if (value == "none") s.Vehicles.RemoveAt(at);
+                    else if (value == "repair") { VehicleInfo v = GameNear(args[1]).Vehicle(s.Vehicles[at].Hash); s.Vehicles[at].Repair(v != null ? v.MaxHitpoints : 50000); }
                     else { VehicleInfo v = GameNear(args[1]).VehicleNamed(value); if (v != null) s.Vehicles[at].Hash = v.Hash; }
                 }
                 else if (key.StartsWith("own:"))

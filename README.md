@@ -72,7 +72,14 @@ Both are big-endian.
 | `0x064C` | outfit: count, then 16-byte records in place (item id, variant id, slot, wear option); room for 128 |
 | `0x0E50` | clothing owned: count, then 12-byte records in place (item id, variant id, 0); room for 2048 |
 | `0x6E88` | homies: count, pointer to 12-byte records (name, 0, unlocked) |
-| `0x6E98` | garage: count, pointer to 1160-byte records (0, car number, model name hash, garage, then paint, parts and condition); `0x6EA0` is the next car number |
+| `0x6E98` | garage: count, pointer to 1160-byte records; `0x6EA0` is the next car number |
+
+A car record: `0x04` car number, `0x08` model name hash, `0x14` the parts and
+paint chosen (not decoded), `0x158` repair bill (float), `0x15C` hit points
+(ten times the table's `Max_Hitpoints`, 5000 when not given), `0x160` a count
+and then one value per part (panels up to a fifth of the hit points, tyres 450,
+glass 1, larger ones for the engine and doors), `0x268` damage flags, `0x2A4`
+the number of dents, then 24-byte dents to the end.
 | `0x6E90` | neighbourhoods: count, pointer to 12-byte records (name, owner, flags) |
 | `0x6F8C` | crib weapon cache: count, pointer to 8-byte records (name hash, flags) |
 
@@ -96,11 +103,16 @@ not known yet.
 
 ### The garage
 
-The cars are listed by name. **Another like it** adds a copy with the next
-car number; **Remove** takes one out; the model can be changed. A copy or a
-changed model keeps the paint and parts of the car it came from, and the game
-may reset ones that don't fit the new model. The editor doesn't yet read the
-paint and parts themselves.
+The cars are listed by name with their condition. **Repair** does what the
+mechanic does: full hit points, no repair bill, no dents, and every part back
+up. The save does not say what kind each part is (panel, tyre, glass), so a
+damaged part is raised to the most its kind could hold and the game holds it
+to the part's own maximum; a part the game knocked all the way down to 1 is
+left as it is. **Another like it** adds a copy with the next car number;
+**Remove** takes one out; the model can be changed. A copy or a changed model
+keeps the paint and parts of the car it came from, and the game may reset ones
+that don't fit the new model. The paint and parts themselves are not decoded
+yet.
 
 ## Fair play
 

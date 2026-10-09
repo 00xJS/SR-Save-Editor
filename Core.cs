@@ -126,6 +126,7 @@ namespace MpCharacterEditor
     class VehicleInfo
     {
         public string Name, Title, Category; public uint Hash;
+        public uint MaxHitpoints;   // ten times the table's Max_Hitpoints (5000 when not given): the saves count in tenths
         public override string ToString() { return Title + "  (" + Category + ")"; }
     }
     class CheatInfo { public string Name, Number, Category; }
@@ -206,6 +207,7 @@ namespace MpCharacterEditor
                 if (n == null) continue;
                 VehicleInfo v = new VehicleInfo();
                 v.Name = n; v.Title = Tag(block, "Display_Name") ?? n; v.Category = Tag(block, "Category") ?? ""; v.Hash = Hash(n);
+                int hp = Number(Tag(block, "Max_Hitpoints")); v.MaxHitpoints = (uint)(hp > 0 ? hp : 5000) * 10;
                 Vehicles.Add(v); vehicleByHash[v.Hash] = v;
             }
             Vehicles.Sort(delegate(VehicleInfo a, VehicleInfo b) { return string.CompareOrdinal(a.Title, b.Title); });
@@ -695,6 +697,33 @@ namespace MpCharacterEditor
         public uint Id { get { return Be.U32(Raw, 4); } set { Be.Put(Raw, 4, value); } }
         public uint Hash { get { return Be.U32(Raw, 8); } set { Be.Put(Raw, 8, value); } }
         public GarageVehicle Copy() { return new GarageVehicle((byte[])Raw.Clone()); }
+        // Condition: the repair bill (a float), the hit points, then a count of part values and the
+        // values: body panels up to a fifth of the hit points, tyres 450, glass 1, and larger ones
+        // for the engine and doors. Damage flags follow at 0x268, and the dents at 0x2A4 (a count).
+        const int BillAt = 0x158, HitpointsAt = 0x15C, PartCountAt = 0x160, PartsAt = 0x164, FlagsAt = 0x268, FlagsEnd = 0x288, DentsAt = 0x2A4;
+        public float RepairBill { get { byte[] b = { Raw[BillAt + 3], Raw[BillAt + 2], Raw[BillAt + 1], Raw[BillAt] }; return BitConverter.ToSingle(b, 0); } }
+        public uint Hitpoints { get { return Be.U32(Raw, HitpointsAt); } }
+        public uint Dents { get { return Be.U32(Raw, DentsAt); } }
+        public bool Damaged(uint maxHitpoints) { return Hitpoints < maxHitpoints || RepairBill > 0 || Dents > 0; }
+        // As the mechanic leaves it: full hit points, no bill, no dents, every part back up.
+        // The save does not say what kind each part is, so a damaged part is raised to the
+        // largest value its kind could have; the game holds each to its own maximum.
+        // A part at 1 or 450 is left alone: those are whole glass and whole tyres (or, rarely,
+        // a panel knocked down to 1).
+        public void Repair(uint max)
+        {
+            Be.Put(Raw, BillAt, 0); Be.Put(Raw, HitpointsAt, max); Be.Put(Raw, DentsAt, 0);
+            uint part = max / 5;
+            int n = (int)Math.Min(Be.U32(Raw, PartCountAt), 64u);
+            for (int k = 0; k < n; k++)
+            {
+                int o = PartsAt + 4 * k; uint v = Be.U32(Raw, o);
+                if (v == 1 || v == 450) continue;
+                else if (v <= part) Be.Put(Raw, o, part);                        // a body panel, or a part knocked to 0
+                else if (v <= 50000) Be.Put(Raw, o, 50000); else Be.Put(Raw, o, 100000);
+            }
+            for (int o = FlagsAt; o < FlagsEnd; o += 4) Be.Put(Raw, o, 0);
+        }
     }
     class CarriedWeapon
     {

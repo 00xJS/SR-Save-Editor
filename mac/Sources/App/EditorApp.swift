@@ -491,6 +491,11 @@ struct ContentView: View {
                         }.labelsHidden().frame(width: 320)
                         Text(tables.vehicle(hash: v.hash)?.name ?? "").foregroundColor(.secondary)
                         Spacer()
+                        let max = tables.vehicle(hash: v.hash)?.maxHitpoints ?? 50000
+                        if v.damaged(maxHitpoints: max) {
+                            Text("\(Int(100 * Double(v.hitpoints) / Double(max)))%" + (v.repairBill > 0 ? String(format: ", $%.0f to fix", v.repairBill) : "")).foregroundColor(.orange)
+                            Button("Repair") { save.vehicles[i].repair(maxHitpoints: max); editor.touch() }
+                        } else { Text("Mint").foregroundColor(.secondary) }
                         Button("Another") { save.duplicateVehicle(at: i); editor.touch() }
                         Button("Remove") { save.vehicles.remove(at: i); editor.touch() }
                     }
