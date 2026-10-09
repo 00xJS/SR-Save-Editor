@@ -31,6 +31,18 @@ run_both() {
   "$WINE" "$EXE" --story "Z:$WORK/win/game/game.dat" "Z:$WORK/report.txt" "$@" 2>/dev/null
   cmp "$WORK/mac/game/game.dat" "$WORK/win/game/game.dat"
 }
-run_both weapon:beretta=7/457 weapon:m16=40/500 weapon:grenade=1/30 food=the_fist,large_softdrink stash=1 cash=5000
+run_both weapon:beretta=7/457 weapon:m16=40/500 weapon:grenade=1/30 food=the_fist,large_softdrink stash:all=1 cash=5000
 run_both weapon:grenade=none weapon:molotov=1/50 food= cash=123456
+# Wardrobe: a hat, a coat, a different pair of pants, and take the mustache off.
+run_both wear:228=205/203 wear:331=53/32 wear:192=348/497 wear:1=none
+run_both wear:228=206/203 wear:7=none
+
+# The online character, when one is next to the save.
+MP="$(dirname "$SAVE")/3_MPStorage"
+if [ -f "$MP" ]; then
+  for side in mac win; do cp "$MP" "$WORK/$side/game/3_MPStorage"; done
+  ./mac/build/sredit mp "$WORK/mac/game/3_MPStorage" wear:228=206/203 wear:331=53/32 cash=777 >/dev/null
+  "$WINE" "$EXE" --mp "Z:$WORK/win/game/3_MPStorage" "Z:$WORK/report.txt" wear:228=206/203 wear:331=53/32 cash=777 2>/dev/null
+  cmp "$WORK/mac/game/3_MPStorage" "$WORK/win/game/3_MPStorage"
+fi
 echo "ok: both editors wrote identical saves"

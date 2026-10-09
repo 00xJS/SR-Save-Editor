@@ -63,7 +63,9 @@ final class MpCharacter {
     private var data: [UInt8]
     var cents: UInt32
     var owned: [ClothingPair] = []
-    private(set) var wearing: Set<ClothingPair> = []
+    /// What the character wears, one record per body slot.
+    var outfit: [WornItem] = []
+    var wearing: Set<ClothingPair> { Set(outfit.map { ClothingPair(item: $0.item, variant: $0.variant) }) }
 
     static func players(game: URL) -> [(name: String, file: URL)] {
         let root = game.appendingPathComponent("545107D1/profile")
@@ -83,18 +85,21 @@ final class MpCharacter {
         }
         cents = 0
         cents = u32(Self.cashAt)
-        for k in 0..<Int(min(u32(Self.wornCountAt), UInt32(Self.wornMax))) {
-            wearing.insert(ClothingPair(item: Int(u32(Self.wornAt + 16 * k)), variant: Int(u32(Self.wornAt + 16 * k + 4))))
-        }
+        outfit = [WornItem].read(u32, countAt: Self.wornCountAt, at: Self.wornAt, max: Self.wornMax)
         for k in 0..<Int(min(u32(Self.ownedCountAt), UInt32(Self.ownedMax))) {
             owned.append(ClothingPair(item: Int(u32(Self.ownedAt + 12 * k)), variant: Int(u32(Self.ownedAt + 12 * k + 4))))
         }
     }
 
-    /// Writes cash and the owned list, keeping the previous file as 3_MPStorage.<date>-<time>.bak.
-    func write() throws -> URL {
+    /// Writes cash, the outfit and the owned list, keeping the previous file as 3_MPStorage.<date>-<time>.bak.
+    /// Clothing that is worn and sold in multiplayer is owned as well; hair and eyes are not sold, and stay as the game keeps them.
+    func write(store: Set<ClothingPair> = []) throws -> URL {
+        for p in wearing where store.contains(p) && !owned.contains(p) { owned.append(p) }
         guard owned.count <= Self.ownedMax else { throw SaveError(description: "The file has room for \(Self.ownedMax) owned items.") }
         put(Self.cashAt, cents)
+        let worn = Array(outfit.prefix(Self.wornMax))
+        put(Self.wornCountAt, UInt32(worn.count))
+        data.replaceSubrange(Self.wornAt..<Self.wornAt + Self.wornMax * 16, with: worn.records(max: Self.wornMax))
         put(Self.ownedCountAt, UInt32(owned.count))
         for i in Self.ownedAt..<Self.ownedAt + Self.ownedMax * 12 { data[i] = 0 }
         for (k, p) in owned.enumerated() {

@@ -15,6 +15,7 @@ final class Editor: ObservableObject {
     @Published var slots: [CarriedWeapon?] = Array(repeating: nil, count: 8)
     @Published var quick: [String?] = Array(repeating: nil, count: 4)
     @Published var selectedSlot = 2
+    @Published var outfit: [WornItem] = []
     private var extras: [CarriedWeapon] = []
     private var extraFood: [String] = []
     // Online character.
@@ -23,7 +24,14 @@ final class Editor: ObservableObject {
     @Published var character: MpCharacter?
     @Published var mpCashText = ""
     @Published var ownedClothing: Set<ClothingPair> = []
+    @Published var mpOutfit: [WornItem] = []
     private(set) var clothing: ClothingTables?
+    private var wardrobeTables: WardrobeTables?
+    /// The wardrobe tables are big; they are read the first time a wardrobe screen opens.
+    var wardrobe: WardrobeTables? {
+        if wardrobeTables == nil, let t = tables { wardrobeTables = WardrobeTables(tables: t) }
+        return wardrobeTables
+    }
     private var spDirty = false, mpDirty = false
 
     static var defaultGameFolder: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("SaintsReborn/dist/game") }
@@ -55,6 +63,7 @@ final class Editor: ObservableObject {
         guard let pack = GameTables.find(near: url), tables == nil || true else { return }
         tables = try? GameTables(packfile: pack)
         clothing = tables.map { ClothingTables(tables: $0) }
+        wardrobeTables = nil
     }
 
     func title(of url: URL) -> String {
@@ -77,6 +86,7 @@ final class Editor: ObservableObject {
             quick = Array(repeating: nil, count: 4)
             for (i, f) in s.food.prefix(4).enumerated() { quick[i] = f }
             extraFood = Array(s.food.dropFirst(4))
+            outfit = s.outfit
             status = "Loaded the save from \(title(of: url))."
         } catch { save = nil; status = "\(error)" }
         revision += 1
@@ -89,6 +99,7 @@ final class Editor: ObservableObject {
             character = c; playerName = name; mpDirty = false
             mpCashText = String(format: "%.0f", Double(c.cents) / 100)
             ownedClothing = Set(c.owned)
+            mpOutfit = c.outfit
         } catch { character = nil; status = "\(error)" }
     }
 
@@ -136,11 +147,13 @@ final class Editor: ObservableObject {
                     s.weapons = slots.compactMap { $0 } + extras
                     s.food = quick.compactMap { $0 } + extraFood
                 }
+                s.outfit = outfit
                 notes.append("Story save written (previous kept as \(try s.write().lastPathComponent)).")
                 spDirty = false
             }
             if let c = character, mpDirty {
                 if let v = Double(mpCashText) { c.cents = UInt32(max(0, min(v, 20_000_000)) * 100) }
+                c.outfit = mpOutfit
                 let store = clothing?.store.map(\.pair) ?? []
                 let inStore = Set(store)
                 c.owned = c.owned.filter { !inStore.contains($0) } + store.filter { ownedClothing.contains($0) || c.wearing.contains($0) }
@@ -305,12 +318,13 @@ struct WeaponWheel: View {
 // MARK: - Screens
 
 enum Screen: String, CaseIterable, Identifiable {
-    case player = "Player", weapons = "Weapons", stash = "Crib weapons", hoods = "Neighbourhoods", homies = "Homies", cheats = "Cheat codes", online = "Online character"
+    case player = "Player", weapons = "Weapons", wardrobe = "Wardrobe", stash = "Crib weapons", hoods = "Neighbourhoods", homies = "Homies", cheats = "Cheat codes", online = "Online character"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .player: return "person.fill"
         case .weapons: return "scope"
+        case .wardrobe: return "tshirt.fill"
         case .stash: return "shippingbox.fill"
         case .hoods: return "map.fill"
         case .homies: return "person.2.fill"
@@ -318,7 +332,7 @@ enum Screen: String, CaseIterable, Identifiable {
         case .online: return "globe"
         }
     }
-    static let story: [Screen] = [.player, .weapons, .stash, .hoods, .homies, .cheats]
+    static let story: [Screen] = [.player, .weapons, .wardrobe, .stash, .hoods, .homies, .cheats]
 }
 
 struct ContentView: View {
@@ -327,6 +341,7 @@ struct ContentView: View {
     @State var screen: Screen = Screen(rawValue: UserDefaults.standard.string(forKey: "screen") ?? "") ?? .player
     @State var cheatSearch = ""
     @State var clothingSearch = ""
+    @State var onlineTab = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -360,6 +375,7 @@ struct ContentView: View {
                         if let save = editor.save {
                             switch screen {
                             case .weapons: weaponsScreen
+                            case .wardrobe: wardrobeScreen
                             case .stash: stashScreen(save)
                             case .hoods: hoodsScreen(save)
                             case .homies: homiesScreen(save)
@@ -434,6 +450,12 @@ struct ContentView: View {
         Binding(get: { editor.slots[slot]?[keyPath: key] ?? 0 }, set: { editor.slots[slot]?[keyPath: key] = $0; editor.touch() })
     }
 
+    @ViewBuilder var wardrobeScreen: some View {
+        if let w = editor.wardrobe {
+            WardrobeView(outfit: $editor.outfit, tables: w) { editor.touch() }
+        } else { needsGameFiles }
+    }
+
     func stashScreen(_ save: SinglePlayerSave) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -503,6 +525,7 @@ struct ContentView: View {
     @ViewBuilder var onlineScreen: some View {
         if let c = editor.character {
             let store = editor.clothing?.store ?? []
+            let wearingNow = Set(editor.mpOutfit.map { ClothingPair(item: $0.item, variant: $0.variant) })
             let shown = store.filter { clothingSearch.isEmpty || $0.title.localizedCaseInsensitiveContains(clothingSearch) || $0.style.localizedCaseInsensitiveContains(clothingSearch) || $0.category.localizedCaseInsensitiveContains(clothingSearch) }
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
@@ -513,20 +536,27 @@ struct ContentView: View {
                         .onChange(of: editor.mpCashText) { _ in editor.touchOnline() }
                     Spacer()
                 }.padding(10)
+                Picker("", selection: $onlineTab) { Text("Clothing owned").tag(0); Text("Wearing").tag(1) }.pickerStyle(.segmented).labelsHidden().frame(width: 260).padding(.horizontal, 10).padding(.bottom, 8)
+                if onlineTab == 1 {
+                    if let w = editor.wardrobe {
+                        WardrobeView(outfit: $editor.mpOutfit, tables: w, allowed: Set(store.map(\.pair))) { editor.touchOnline() }
+                    } else { needsGameFiles }
+                } else {
                 HStack {
                     Text("Owns \(store.filter { editor.ownedClothing.contains($0.pair) }.count) of \(store.count) clothing styles").foregroundColor(.secondary)
                     Spacer()
                     TextField("Search", text: $clothingSearch).textFieldStyle(.roundedBorder).frame(width: 180)
                     Button("Own all") { editor.ownedClothing.formUnion(store.map(\.pair)); editor.touchOnline() }
-                    Button("Own none") { editor.ownedClothing = editor.ownedClothing.filter { c.wearing.contains($0) }; editor.touchOnline() }
+                    Button("Own none") { editor.ownedClothing = editor.ownedClothing.filter { wearingNow.contains($0) }; editor.touchOnline() }
                 }.padding(.horizontal, 10).padding(.bottom, 8)
                 List(shown) { item in
                     Toggle(isOn: Binding(get: { editor.ownedClothing.contains(item.pair) }, set: { on in
                         if on { editor.ownedClothing.insert(item.pair) } else { editor.ownedClothing.remove(item.pair) }
                         editor.touchOnline()
                     })) {
-                        HStack { Text(item.title); Text(item.style).foregroundColor(.secondary); Spacer(); Text(c.wearing.contains(item.pair) ? "wearing" : item.category).foregroundColor(.secondary) }
-                    }.disabled(c.wearing.contains(item.pair))
+                        HStack { Text(item.title); Text(item.style).foregroundColor(.secondary); Spacer(); Text(wearingNow.contains(item.pair) ? "wearing" : item.category).foregroundColor(.secondary) }
+                    }.disabled(wearingNow.contains(item.pair))
+                }
                 }
             }
         } else {

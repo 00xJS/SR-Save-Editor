@@ -5,6 +5,10 @@
 Mac and Windows.
 
 - The weapon wheel shows the game's own icons, read from your game files.
+- The wardrobe: change what the player wears in the story save, and what the
+  online character wears. Hair, facial hair, eyes, hats, eyewear, shirts, coats,
+  necklaces, medallions, pendants, bracelets, watches, rings, underwear, pants,
+  socks and shoes. Belts, piercings and tattoos are not in yet.
 - Restore backup for story saves (and for the online character on Mac).
 - `tests/compare.sh` checks that both versions write identical saves.
 

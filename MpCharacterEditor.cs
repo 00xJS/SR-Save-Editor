@@ -5,8 +5,8 @@
 //   dist\game\545107D1\profile\<player name>\storage\3_MPStorage
 // (27,724 bytes, big-endian):
 //   0x0004  u32  cash in cents
-//   0x0414  u32  number of worn items, then 16-byte records:
-//                item id, variant id, slot, wear option (MeshID)
+//   0x0414  u32  number of worn items, then 16-byte records (room for 128):
+//                item id, variant id, slot, wear option (MeshID); see WardrobeTables in Core.cs
 //   0x0C18  u32  number of owned items, then 12-byte records:
 //                item id, variant id, 0          (room for 2048)
 // Item names come from the player's own game files (customization_items.xtbl,
@@ -157,8 +157,6 @@ namespace MpCharacterEditor
         }
     }
 
-    class Worn { public int Item, Variant, Slot, Mesh; }
-
     class Character
     {
         public const int Size = 27724;
@@ -170,7 +168,8 @@ namespace MpCharacterEditor
         readonly byte[] data;
         public long Cents;
         public readonly List<Pair> Owned = new List<Pair>();
-        public readonly List<Worn> Wearing = new List<Worn>();
+        // What the character wears, one record per body slot.
+        public List<WornItem> Outfit = new List<WornItem>();
 
         public Character(string path)
         {
@@ -179,25 +178,18 @@ namespace MpCharacterEditor
             if (data.Length != Size)
                 throw new InvalidDataException("This file is " + data.Length + " bytes; a multiplayer character file is " + Size + ".");
             Cents = Be.U32(data, CashAt);
-            int n = (int)Math.Min(Be.U32(data, WornCountAt), (uint)WornMax);
-            for (int k = 0; k < n; k++)
-            {
-                int o = WornAt + 16 * k;
-                Worn w = new Worn();
-                w.Item = (int)Be.U32(data, o); w.Variant = (int)Be.U32(data, o + 4);
-                w.Slot = (int)Be.U32(data, o + 8); w.Mesh = (int)Be.U32(data, o + 12);
-                Wearing.Add(w);
-            }
-            n = (int)Math.Min(Be.U32(data, OwnedCountAt), (uint)OwnedMax);
+            Outfit = WardrobeTables.Read(data, WornCountAt, WornAt, WornMax);
+            int n = (int)Math.Min(Be.U32(data, OwnedCountAt), (uint)OwnedMax);
             for (int k = 0; k < n; k++)
                 Owned.Add(new Pair((int)Be.U32(data, OwnedAt + 12 * k), (int)Be.U32(data, OwnedAt + 12 * k + 4)));
         }
 
-        // Writes cash and the owned list; returns the name of the backup.
+        // Writes cash, the outfit and the owned list; returns the name of the backup.
         public string Save(long cents, List<Pair> owned)
         {
             if (owned.Count > OwnedMax) throw new InvalidOperationException("The file has room for " + OwnedMax + " owned items.");
             Be.Put(data, CashAt, (uint)cents);
+            WardrobeTables.Write(data, WornCountAt, WornAt, WornMax, Outfit);
             Be.Put(data, OwnedCountAt, (uint)owned.Count);
             Array.Clear(data, OwnedAt, OwnedMax * 12);
             for (int k = 0; k < owned.Count; k++)
@@ -415,6 +407,151 @@ namespace MpCharacterEditor
         }
     }
 
+    // The wardrobe: body slots on the left, what can go in the chosen slot on the
+    // right. Used for the story save and for the online character.
+    class WardrobePanel : Panel
+    {
+        readonly WardrobeTables tables;
+        readonly HashSet<long> allowed;   // online: only clothing sold in multiplayer; null = everything
+        readonly Action changed;
+        List<WornItem> outfit = new List<WornItem>();
+        int slot = 12;
+        bool filling;
+        readonly ListView slotList = new ListView(), choiceList = new ListView();
+        readonly Label title = new Label(), note = new Label();
+        readonly ComboBox wearBox = new ComboBox();
+        readonly Button takeOff = new Button();
+        readonly TextBox search = new TextBox();
+
+        public WardrobePanel(WardrobeTables tables, HashSet<long> allowed, Action changed)
+        {
+            this.tables = tables; this.allowed = allowed; this.changed = changed;
+            Dock = DockStyle.Fill;
+
+            slotList.View = View.Details; slotList.FullRowSelect = true; slotList.HideSelection = false; slotList.MultiSelect = false;
+            slotList.Columns.Add("Slot", 130); slotList.Columns.Add("Wearing", 190);
+            slotList.Dock = DockStyle.Left; slotList.Width = 330;
+            foreach (BodySlot b in WardrobeTables.Slots) { ListViewItem row = new ListViewItem(new string[] { b.Title, "" }); row.Tag = b.Id; slotList.Items.Add(row); }
+            slotList.ItemSelectionChanged += delegate(object o, ListViewItemSelectionChangedEventArgs e)
+            {
+                if (filling || !e.IsSelected) return;
+                slot = (int)e.Item.Tag; ShowSlot();
+            };
+
+            FlowLayoutPanel top = new FlowLayoutPanel();
+            top.Dock = DockStyle.Top; top.AutoSize = true; top.Padding = new Padding(6, 6, 6, 2); top.WrapContents = false;
+            title.AutoSize = true; title.Margin = new Padding(6, 7, 12, 0); title.Font = new Font(Font, FontStyle.Bold);
+            top.Controls.Add(title);
+            Label wornAs = new Label(); wornAs.Text = "Worn as"; wornAs.AutoSize = true; wornAs.Margin = new Padding(6, 7, 2, 0);
+            top.Controls.Add(wornAs);
+            wearBox.DropDownStyle = ComboBoxStyle.DropDownList; wearBox.Width = 220;
+            wearBox.SelectedIndexChanged += delegate
+            {
+                WornItem w = WardrobeTables.WornIn(outfit, slot);
+                if (filling || w == null || wearBox.SelectedItem == null) return;
+                WardrobeTables.Put(outfit, w.Item, w.Variant, ((WearOption)wearBox.SelectedItem).Mesh, slot);
+                Refresh(); changed();
+            };
+            top.Controls.Add(wearBox);
+            takeOff.Text = "Take off"; takeOff.AutoSize = true;
+            takeOff.Click += delegate { WardrobeTables.TakeOff(outfit, slot); Refresh(); changed(); };
+            top.Controls.Add(takeOff);
+
+            FlowLayoutPanel filter = new FlowLayoutPanel();
+            filter.Dock = DockStyle.Top; filter.AutoSize = true; filter.Padding = new Padding(6, 2, 6, 4); filter.WrapContents = false;
+            Label caption = new Label(); caption.Text = "Search"; caption.AutoSize = true; caption.Margin = new Padding(6, 7, 2, 0);
+            filter.Controls.Add(caption);
+            search.Width = 200; search.TextChanged += delegate { ShowChoices(); };
+            filter.Controls.Add(search);
+            note.AutoSize = true; note.Margin = new Padding(12, 7, 0, 0); note.ForeColor = SystemColors.GrayText;
+            filter.Controls.Add(note);
+
+            choiceList.View = View.Details; choiceList.FullRowSelect = true; choiceList.HideSelection = false; choiceList.MultiSelect = false;
+            choiceList.Columns.Add("Item", 230); choiceList.Columns.Add("Colour / style", 230); choiceList.Columns.Add("Category", 120);
+            choiceList.Dock = DockStyle.Fill;
+            choiceList.ItemSelectionChanged += delegate(object o, ListViewItemSelectionChangedEventArgs e)
+            {
+                if (filling || !e.IsSelected) return;
+                WornItem pick = (WornItem)e.Item.Tag;
+                WornItem now = WardrobeTables.WornIn(outfit, slot);
+                // Keep the way it is worn when only the colour changes.
+                int mesh = now != null && now.Item == pick.Item ? now.Mesh : pick.Mesh;
+                WardrobeTables.Put(outfit, pick.Item, pick.Variant, mesh, slot);
+                Refresh(); changed();
+            };
+
+            Panel right = new Panel(); right.Dock = DockStyle.Fill;
+            right.Controls.Add(choiceList); right.Controls.Add(filter); right.Controls.Add(top);
+            Controls.Add(right); Controls.Add(slotList);
+            Visible = true;
+        }
+
+        // Shows an outfit; changes are made to the list itself.
+        public void Show(List<WornItem> outfit)
+        {
+            this.outfit = outfit;
+            Refresh();
+        }
+        public new void Refresh()
+        {
+            filling = true;
+            foreach (ListViewItem row in slotList.Items)
+            {
+                WornItem w = WardrobeTables.WornIn(outfit, (int)row.Tag);
+                row.SubItems[1].Text = w == null ? "" : tables.Title(w) + (tables.Style(w).Length > 0 ? " - " + tables.Style(w) : "");
+                row.Selected = (int)row.Tag == slot;
+            }
+            int others = 0;
+            foreach (WornItem w in outfit) if (WardrobeTables.Slot(w.Slot) == null) others++;
+            note.Text = others > 0 ? others + " worn in slots this editor can't change yet" : "";
+            filling = false;
+            ShowSlot();
+        }
+
+        void ShowSlot()
+        {
+            BodySlot b = WardrobeTables.Slot(slot);
+            WornItem w = WardrobeTables.WornIn(outfit, slot);
+            title.Text = (b != null ? b.Title : "Slot " + slot) + ": " + (w == null ? "nothing" : tables.Title(w) + " " + tables.Style(w));
+            filling = true;
+            wearBox.Items.Clear();
+            WardrobeItem item = w == null ? null : tables.Item(w.Item);
+            if (item != null)
+                foreach (WearOption o in item.OptionsIn(slot)) { wearBox.Items.Add(o); if (o.Mesh == w.Mesh) wearBox.SelectedItem = o; }
+            wearBox.Enabled = wearBox.Items.Count > 1;
+            takeOff.Enabled = w != null;
+            filling = false;
+            ShowChoices();
+        }
+
+        void ShowChoices()
+        {
+            WornItem now = WardrobeTables.WornIn(outfit, slot);
+            string q = search.Text.Trim().ToLowerInvariant();
+            filling = true;
+            choiceList.BeginUpdate();
+            choiceList.Items.Clear();
+            foreach (WardrobeItem item in tables.Choices(slot))
+            {
+                List<WearOption> options = item.OptionsIn(slot);
+                List<WardrobeVariant> variants = item.Variants;
+                if (variants.Count == 0) { WardrobeVariant none = new WardrobeVariant(); none.Id = 0; none.Title = ""; variants = new List<WardrobeVariant>(); variants.Add(none); }
+                foreach (WardrobeVariant v in variants)
+                {
+                    if (allowed != null && !allowed.Contains(new Pair(item.Id, v.Id).Key)) continue;
+                    if (q.Length > 0 && (item.Title + " " + v.Title + " " + item.Category).ToLowerInvariant().IndexOf(q) < 0) continue;
+                    ListViewItem row = new ListViewItem(new string[] { item.Title, v.Title, item.Category });
+                    row.Tag = new WornItem(item.Id, v.Id, slot, options[0].Mesh);
+                    row.Selected = now != null && now.Item == item.Id && now.Variant == v.Id;
+                    choiceList.Items.Add(row);
+                }
+            }
+            choiceList.EndUpdate();
+            if (choiceList.SelectedItems.Count > 0) choiceList.EnsureVisible(choiceList.SelectedItems[0].Index);
+            filling = false;
+        }
+    }
+
     class MainForm : Form
     {
         string dist;
@@ -422,6 +559,8 @@ namespace MpCharacterEditor
         GameIcons icons;
         readonly Dictionary<string, Image> iconCache = new Dictionary<string, Image>();
         Tables tables;
+        WardrobeTables wardrobe;
+        WardrobePanel storyWardrobe, onlineWardrobe;
 
         // Story save.
         StorySave story;
@@ -460,7 +599,8 @@ namespace MpCharacterEditor
         readonly ComboBox categoryBox = new ComboBox();
         readonly CheckBox ownedOnly = new CheckBox();
         readonly Button tickAll = new Button(), untickAll = new Button();
-        readonly ListView itemList = new ListView(), wornList = new ListView();
+        readonly ListView itemList = new ListView();
+        readonly TabPage wornPage = new TabPage("Wearing"), wardrobePage = new TabPage("Wardrobe");
         readonly StatusStrip status = new StatusStrip();
         readonly ToolStripStatusLabel statusText = new ToolStripStatusLabel();
 
@@ -507,14 +647,11 @@ namespace MpCharacterEditor
 
             SetUpList(itemList, true, "Item", 250, "Colour / style", 250, "Category", 110, "", 110);
             itemList.ItemCheck += ItemCheck;
-            SetUpList(wornList, false, "Item", 230, "Colour / style", 230, "Category", 110, "Worn as", 150);
 
             TabControl tabs = new TabControl();
             tabs.Dock = DockStyle.Fill;
             TabPage itemsPage = new TabPage("Items (tick = owned)");
             itemsPage.Controls.Add(itemList); itemsPage.Controls.Add(filter);
-            TabPage wornPage = new TabPage("Wearing now");
-            wornPage.Controls.Add(wornList);
             tabs.TabPages.Add(itemsPage); tabs.TabPages.Add(wornPage);
 
             status.Items.Add(statusText);
@@ -593,6 +730,13 @@ namespace MpCharacterEditor
                 icons = GameIcons.Open(game, dist);
                 foreach (Image i in iconCache.Values) if (i != null) i.Dispose();
                 iconCache.Clear();
+                wardrobe = new WardrobeTables(game);
+                HashSet<long> sold = new HashSet<long>();
+                foreach (Pair p in tables.Store) sold.Add(p.Key);
+                wardrobePage.Controls.Clear(); wornPage.Controls.Clear();
+                storyWardrobe = new WardrobePanel(wardrobe, null, delegate { StoryChanged(); });
+                onlineWardrobe = new WardrobePanel(wardrobe, sold, delegate { WornChanged(); });
+                wardrobePage.Controls.Add(storyWardrobe); wornPage.Controls.Add(onlineWardrobe);
                 Game.Remember(dist);
             }
             catch (Exception ex)
@@ -612,7 +756,7 @@ namespace MpCharacterEditor
             if (playerBox.Items.Count == 0)
             {
                 character = null;
-                itemList.Items.Clear(); wornList.Items.Clear();
+                itemList.Items.Clear();
                 statusText.Text = "No multiplayer character yet. In the game, open MULTIPLAYER, change something in the wardrobe and save, then come back.";
                 saveButton.Enabled = false;
                 restoreButton.Enabled = false;
@@ -771,6 +915,7 @@ namespace MpCharacterEditor
             storyTabs.Dock = DockStyle.Fill;
             storyTabs.TabPages.Add(Page("Player", player));
             storyTabs.TabPages.Add(Page("Weapons", Fill(wheel, ammo)));
+            storyTabs.TabPages.Add(wardrobePage);
             storyTabs.TabPages.Add(Page("Crib weapons", Fill(stashList, stashTop)));
             storyTabs.TabPages.Add(Page("Neighbourhoods", Fill(hoodList, hoodTop)));
             storyTabs.TabPages.Add(Page("Homies", Fill(homieList, homieTop)));
@@ -856,6 +1001,7 @@ namespace MpCharacterEditor
             filling = false;
             storyDirty = false;
             storySave.Enabled = true; storyRestore.Enabled = true;
+            if (storyWardrobe != null) storyWardrobe.Show(story.Outfit);
             ShowHoods(); ShowWheel(); ShowCounts(); ShowStatus();
         }
 
@@ -1106,7 +1252,7 @@ namespace MpCharacterEditor
             }
             owned.Clear(); worn.Clear(); rows.Clear();
             foreach (Pair p in character.Owned) owned.Add(p.Key);
-            foreach (Worn w in character.Wearing) worn.Add(new Pair(w.Item, w.Variant).Key);
+            foreach (WornItem w in character.Outfit) worn.Add(new Pair(w.Item, w.Variant).Key);
 
             HashSet<long> listed = new HashSet<long>();
             foreach (Pair p in tables.Store) if (listed.Add(p.Key)) rows.Add(p);
@@ -1123,12 +1269,7 @@ namespace MpCharacterEditor
             categoryBox.SelectedItem = keep != null && categoryBox.Items.Contains(keep) ? keep : "All categories";
             filling = false;
 
-            wornList.BeginUpdate();
-            wornList.Items.Clear();
-            foreach (Worn w in character.Wearing)
-                wornList.Items.Add(new ListViewItem(new string[] { tables.ItemTitle(w.Item), tables.VariantTitle(w.Item, w.Variant),
-                    tables.Category(w.Item), tables.WearTitle(w.Item, w.Mesh) }));
-            wornList.EndUpdate();
+            if (onlineWardrobe != null) onlineWardrobe.Show(character.Outfit);
 
             dirty = false;
             saveButton.Enabled = true;
@@ -1189,6 +1330,20 @@ namespace MpCharacterEditor
         }
 
         void Changed() { dirty = true; ShowStatus(); }
+
+        // The outfit changed: what is worn is owned too, and stays ticked.
+        void WornChanged()
+        {
+            worn.Clear();
+            foreach (WornItem w in character.Outfit)
+            {
+                long key = new Pair(w.Item, w.Variant).Key;
+                worn.Add(key);
+                if (tables.Items.ContainsKey(w.Item)) owned.Add(key);
+            }
+            dirty = true;
+            FillItems();
+        }
 
         void ShowStatus()
         {
@@ -1278,8 +1433,8 @@ namespace MpCharacterEditor
             foreach (string player in Game.Players(dist))
             {
                 Character c = new Character(Game.CharacterFile(dist, player));
-                sb.AppendLine("player " + player + ": cash " + (c.Cents / 100m).ToString("0.00") + ", wearing " + c.Wearing.Count + ", owned " + c.Owned.Count);
-                foreach (Worn w in c.Wearing)
+                sb.AppendLine("player " + player + ": cash " + (c.Cents / 100m).ToString("0.00") + ", wearing " + c.Outfit.Count + ", owned " + c.Owned.Count);
+                foreach (WornItem w in c.Outfit)
                     sb.AppendLine("  slot " + w.Slot + "  " + w.Item + "/" + w.Variant + "  " + tables.ItemTitle(w.Item) + " - " +
                         tables.VariantTitle(w.Item, w.Variant) + "  (" + tables.WearTitle(w.Item, w.Mesh) + ")");
             }
@@ -1301,7 +1456,12 @@ namespace MpCharacterEditor
                 changed = true;
                 if (key == "cash") s.Cash = decimal.Parse(value);
                 else if (key == "food") s.Food = new List<string>(value.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries));
-                else if (key == "stash") for (int k = 0; k < s.Stash.Count; k++) s.SetStash(k, value == "1");
+                else if (key == "stash" || key.StartsWith("stash:"))
+                {
+                    string name = key == "stash" ? "all" : key.Substring(6);
+                    for (int k = 0; k < s.Stash.Count; k++) if (name == "all" || s.Stash[k].Hash == GameData.Hash(name)) s.SetStash(k, value == "1");
+                }
+                else if (key.StartsWith("wear:")) Dress(s.Outfit, key, value, args[1]);
                 else if (key.StartsWith("weapon:"))
                 {
                     string name = key.Substring(7);
@@ -1315,9 +1475,69 @@ namespace MpCharacterEditor
             sb.AppendLine("cash " + s.Cash.ToString("0.00") + ", respect " + s.Respect);
             foreach (CarriedWeapon w in s.Weapons) sb.AppendLine("weapon " + w.Name + " " + w.Clip + "/" + w.Reserve);
             sb.AppendLine("food " + string.Join(",", s.Food.ToArray()));
+            sb.AppendLine("outfit " + WardrobeTables.Describe(s.Outfit));
             int unlocked = 0;
             foreach (StashWeapon w in s.Stash) if (w.Unlocked) unlocked++;
             sb.AppendLine("stash " + unlocked + "/" + s.Stash.Count + ", homies " + s.Homies.Count + ", neighbourhoods " + s.Hoods.Count);
+            File.WriteAllText(args[2], sb.ToString());
+            return 0;
+        }
+
+        // wear:<item id>=<variant id>/<mesh id> puts an item on (the slot follows from the mesh); wear:<slot>=none takes one off.
+        static GameData cliGame;
+        static WardrobeTables cliWardrobe;
+        // The game files: the dist folder above a save, or the usual places.
+        static GameData GameNear(string file)
+        {
+            if (cliGame != null) return cliGame;
+            string dir = Path.GetDirectoryName(Path.GetFullPath(file));
+            while (dir != null && !Game.IsDist(dir)) dir = Path.GetDirectoryName(dir);
+            return cliGame = new GameData(dir ?? Game.FindDist());
+        }
+        static void Dress(List<WornItem> outfit, string key, string value, string nearFile)
+        {
+            int n = int.Parse(key.Substring(5));
+            if (value == "none") { WardrobeTables.TakeOff(outfit, n); return; }
+            string[] ids = value.Split('/');
+            if (cliWardrobe == null) cliWardrobe = new WardrobeTables(GameNear(nearFile));
+            int mesh = int.Parse(ids[1]), slot = cliWardrobe.SlotOfMesh(mesh);
+            if (slot >= 0) WardrobeTables.Put(outfit, n, int.Parse(ids[0]), mesh, slot);
+        }
+
+        // "--mp <3_MPStorage> <report file> [cash=N] [wear:...]": reads an online character, applies
+        // the changes if any, and writes what it holds, for testing.
+        static int Mp(string[] args)
+        {
+            Character c = new Character(args[1]);
+            long cents = (long)c.Cents;
+            bool changed = false;
+            for (int i = 3; i < args.Length; i++)
+            {
+                int eq = args[i].IndexOf('=');
+                if (eq < 0) continue;
+                string key = args[i].Substring(0, eq), value = args[i].Substring(eq + 1);
+                changed = true;
+                if (key == "cash") cents = (long)(decimal.Parse(value) * 100m);
+                else if (key.StartsWith("wear:")) Dress(c.Outfit, key, value, args[1]);
+            }
+            StringBuilder sb = new StringBuilder();
+            if (changed)
+            {
+                // What is worn and sold in multiplayer is owned too.
+                List<Pair> owned = new List<Pair>(c.Owned);
+                HashSet<long> have = new HashSet<long>();
+                foreach (Pair p in owned) have.Add(p.Key);
+                HashSet<long> sold = new HashSet<long>();
+                foreach (Pair p in new Tables(GameNear(args[1])).Store) sold.Add(p.Key);
+                foreach (WornItem w in c.Outfit)
+                {
+                    Pair p = new Pair(w.Item, w.Variant);
+                    if (sold.Contains(p.Key) && have.Add(p.Key)) owned.Add(p);
+                }
+                sb.AppendLine("saved; previous file kept as " + Path.GetFileName(c.Save(cents, owned)));
+            }
+            sb.AppendLine("cash " + (c.Cents / 100m).ToString("0.00") + ", owned " + c.Owned.Count + ", wearing " + c.Outfit.Count);
+            sb.AppendLine("outfit " + WardrobeTables.Describe(c.Outfit));
             File.WriteAllText(args[2], sb.ToString());
             return 0;
         }
@@ -1356,6 +1576,7 @@ namespace MpCharacterEditor
                 return 0;
             }
             if (args.Length >= 3 && args[0] == "--story") return Story(args);
+            if (args.Length >= 3 && args[0] == "--mp") return Mp(args);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             if (args.Length >= 2 && args[0] == "--picture")

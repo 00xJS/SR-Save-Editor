@@ -7,6 +7,7 @@
 //   0x0090  respect            0x00A0  cash in cents
 //   0x0144  carried weapons: count, pointer to 16-byte records (name, count, loaded, spare)
 //   0x0240  carried food: count, pointer to names
+//   0x064C  outfit: count, then 16-byte records in the header (item, variant, slot, wear option)
 //   0x6E88  homies: count, pointer to 12-byte records (name, 0, unlocked)
 //   0x6E90  neighbourhoods: count, pointer to 12-byte records (name, owner, flags)
 //   0x6F8C  crib weapon cache: count, pointer to 8-byte records (name hash, flags)
@@ -16,6 +17,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using System.Xml;
 
 namespace MpCharacterEditor
 {
@@ -435,6 +437,202 @@ namespace MpCharacterEditor
         }
     }
 
+    // One worn thing: the slot number comes from the wear option (MeshID), see WardrobeTables.
+    class WornItem
+    {
+        public int Item, Variant, Slot, Mesh;
+        public WornItem(int item, int variant, int slot, int mesh) { Item = item; Variant = variant; Slot = slot; Mesh = mesh; }
+        public string Key { get { return Item + "/" + Variant + "/" + Slot + "/" + Mesh; } }
+    }
+    class WardrobeVariant { public int Id; public string Title; }
+    class WearOption { public int Mesh, Slot; public string Title; public override string ToString() { return Title; } }   // Slot -1 = a slot this editor does not know
+    class WardrobeItem
+    {
+        public int Id; public string Name, Title, Category;
+        public List<WardrobeVariant> Variants = new List<WardrobeVariant>();
+        public List<WearOption> Options = new List<WearOption>();
+        public List<WearOption> OptionsIn(int slot)
+        {
+            List<WearOption> r = new List<WearOption>();
+            foreach (WearOption o in Options) if (o.Slot == slot) r.Add(o);
+            return r;
+        }
+    }
+    class BodySlot
+    {
+        public int Id; public string Name, Title;
+        public BodySlot(int id, string name, string title) { Id = id; Name = name; Title = title; }
+    }
+
+    // Clothing, hair and jewellery from the player's own game files, by body slot.
+    // The story save and the online character keep what is worn as 16-byte records:
+    // item id, variant id, slot number, wear option (MeshID). The wear option decides
+    // the slot: player_cust.xtbl lists every mesh under its slot.
+    class WardrobeTables
+    {
+        // The slots this editor can dress, in the order shown. The numbers were read from
+        // saves; the coat's (7) is the one gap between the shirts and the underwear.
+        public static readonly BodySlot[] Slots = {
+            new BodySlot(0, "hair head", "Hair"), new BodySlot(4, "hair eyebrows", "Eyebrows"), new BodySlot(53, "eyes", "Eyes"),
+            new BodySlot(3, "hair sideburns", "Sideburns"), new BodySlot(1, "hair mustache", "Mustache"), new BodySlot(2, "hair beard", "Beard"),
+            new BodySlot(12, "headwear", "Hat"), new BodySlot(24, "eyewear", "Eyewear"),
+            new BodySlot(5, "undershirt", "Undershirt"), new BodySlot(6, "overshirt", "Overshirt"), new BodySlot(7, "coat", "Coat"),
+            new BodySlot(19, "necklace high", "Necklace, high"), new BodySlot(18, "necklace medium", "Necklace, medium"), new BodySlot(17, "necklace low", "Necklace, low"),
+            new BodySlot(21, "medallion medium", "Medallion, medium"), new BodySlot(20, "medallion low", "Medallion, low"), new BodySlot(22, "pennant high", "Pendant"),
+            new BodySlot(15, "left wrist", "Left wrist"), new BodySlot(16, "right wrist", "Right wrist"),
+            new BodySlot(25, "finger left index", "Left index finger"), new BodySlot(27, "finger left ring", "Left ring finger"),
+            new BodySlot(26, "finger right index", "Right index finger"), new BodySlot(28, "finger right ring", "Right ring finger"),
+            new BodySlot(8, "underwear", "Underwear"), new BodySlot(9, "pants", "Pants"), new BodySlot(10, "socks", "Socks"), new BodySlot(11, "shoes", "Shoes"),
+        };
+        public const int MaxWorn = 128;
+        public static BodySlot Slot(int id)
+        {
+            foreach (BodySlot s in Slots) if (s.Id == id) return s;
+            return null;
+        }
+
+        public readonly Dictionary<int, WardrobeItem> Items = new Dictionary<int, WardrobeItem>();
+        readonly Dictionary<int, string> meshSlot = new Dictionary<int, string>();   // MeshID -> the game's slot name
+
+        public WardrobeTables(GameData game)
+        {
+            XmlDocument doc = new XmlDocument();
+            using (MemoryStream ms = new MemoryStream(game.Pack.Read("player_cust.xtbl"))) doc.Load(ms);
+            foreach (XmlNode s in doc.SelectNodes("/root/Table/Custom_player_slot"))
+            {
+                string slot = Str(s, "Slot");
+                foreach (XmlNode m in s.SelectNodes("Components/Component/MeshID"))
+                {
+                    int id;
+                    if (int.TryParse(m.InnerText.Trim(), out id)) meshSlot[id] = slot;
+                }
+            }
+            Dictionary<string, int> numbers = new Dictionary<string, int>();
+            foreach (BodySlot b in Slots) numbers[b.Name] = b.Id;
+            doc = new XmlDocument();
+            using (MemoryStream ms = new MemoryStream(game.Pack.Read("customization_items.xtbl"))) doc.Load(ms);
+            foreach (XmlNode n in doc.SelectNodes("/root/Table/Customization_Item"))
+            {
+                int id;
+                if (!int.TryParse(Str(n, "ID"), out id)) continue;
+                WardrobeItem item = new WardrobeItem();
+                item.Id = id; item.Name = Str(n, "Name");
+                item.Title = Lookup(game, Str(n, "DisplayName"), item.Name);
+                item.Category = Str(n, "Category");
+                foreach (XmlNode v in n.SelectNodes("Variants/Variant"))
+                {
+                    int vid;
+                    if (!int.TryParse(Str(v, "VariantID"), out vid)) continue;
+                    WardrobeVariant variant = new WardrobeVariant();
+                    variant.Id = vid; variant.Title = Lookup(game, Str(v, "Name"), Str(v, "Variant_Name"));
+                    item.Variants.Add(variant);
+                }
+                foreach (XmlNode w in n.SelectNodes("Wear_Options/Wear_Option"))
+                {
+                    int mesh;
+                    if (!int.TryParse(Str(w, "MeshID"), out mesh) || Str(w, "Disabled").ToLowerInvariant() == "yes") continue;
+                    WearOption o = new WearOption();
+                    o.Mesh = mesh; o.Title = Lookup(game, Str(w, "Name"), "Normal");
+                    string slotName; int number;
+                    o.Slot = meshSlot.TryGetValue(mesh, out slotName) && numbers.TryGetValue(slotName, out number) ? number : -1;
+                    item.Options.Add(o);
+                }
+                Items[id] = item;
+            }
+        }
+        static string Str(XmlNode n, string child)
+        {
+            XmlNode c = n[child];
+            return c == null ? "" : c.InnerText.Trim();
+        }
+        static string Lookup(GameData game, string key, string fallback)
+        {
+            string s;
+            if (key.Length > 0 && game.Strings.TryGetValue(key, out s) && s.Length > 0) return s;
+            return game.Title(fallback);
+        }
+
+        // Items that can go in a slot, in the game's order.
+        public List<WardrobeItem> Choices(int slot)
+        {
+            List<WardrobeItem> r = new List<WardrobeItem>();
+            foreach (WardrobeItem i in Items.Values) if (i.OptionsIn(slot).Count > 0) r.Add(i);
+            r.Sort(delegate(WardrobeItem a, WardrobeItem b) { return a.Id.CompareTo(b.Id); });
+            return r;
+        }
+        public WardrobeItem Item(int id)
+        {
+            WardrobeItem i;
+            return Items.TryGetValue(id, out i) ? i : null;
+        }
+        public string Title(WornItem w) { WardrobeItem i = Item(w.Item); return i != null ? i.Title : "Item " + w.Item; }
+        public string Style(WornItem w)
+        {
+            WardrobeItem i = Item(w.Item);
+            if (i != null) foreach (WardrobeVariant v in i.Variants) if (v.Id == w.Variant) return v.Title;
+            return "Style " + w.Variant;
+        }
+        public string Wear(WornItem w)
+        {
+            WardrobeItem i = Item(w.Item);
+            if (i != null) foreach (WearOption o in i.Options) if (o.Mesh == w.Mesh) return o.Title;
+            return "";
+        }
+        // The slot the save will put a wear option in, or -1 when this editor does not know it.
+        public int SlotOfMesh(int mesh)
+        {
+            string name;
+            if (!meshSlot.TryGetValue(mesh, out name)) return -1;
+            foreach (BodySlot b in Slots) if (b.Name == name) return b.Id;
+            return -1;
+        }
+
+        // Puts an item in its slot, over whatever was there, keeping the game's order.
+        public static void Put(List<WornItem> outfit, int item, int variant, int mesh, int slot)
+        {
+            WornItem w = new WornItem(item, variant, slot, mesh);
+            for (int i = 0; i < outfit.Count; i++) if (outfit[i].Slot == slot) { outfit[i] = w; return; }
+            outfit.Add(w);
+        }
+        public static void TakeOff(List<WornItem> outfit, int slot) { outfit.RemoveAll(delegate(WornItem w) { return w.Slot == slot; }); }
+        public static WornItem WornIn(List<WornItem> outfit, int slot)
+        {
+            foreach (WornItem w in outfit) if (w.Slot == slot) return w;
+            return null;
+        }
+        public static string Describe(List<WornItem> outfit)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (WornItem w in outfit) sb.Append(w.Key).Append(';');
+            return sb.ToString();
+        }
+
+        // The 16-byte records: count, then records with zeros up to max.
+        public static List<WornItem> Read(byte[] d, int countAt, int at, int max)
+        {
+            List<WornItem> r = new List<WornItem>();
+            int n = (int)Math.Min(Be.U32(d, countAt), (uint)max);
+            for (int k = 0; k < n; k++)
+            {
+                int o = at + 16 * k;
+                r.Add(new WornItem((int)Be.U32(d, o), (int)Be.U32(d, o + 4), (int)Be.U32(d, o + 8), (int)Be.U32(d, o + 12)));
+            }
+            return r;
+        }
+        public static void Write(byte[] d, int countAt, int at, int max, List<WornItem> outfit)
+        {
+            int n = Math.Min(outfit.Count, max);
+            Be.Put(d, countAt, (uint)n);
+            Array.Clear(d, at, max * 16);
+            for (int k = 0; k < n; k++)
+            {
+                int o = at + 16 * k;
+                Be.Put(d, o, (uint)outfit[k].Item); Be.Put(d, o + 4, (uint)outfit[k].Variant);
+                Be.Put(d, o + 8, (uint)outfit[k].Slot); Be.Put(d, o + 12, (uint)outfit[k].Mesh);
+            }
+        }
+    }
+
     class Neighbourhood { public string Name; public int OwnerAt; public uint Owner; }
     class Homie { public string Name; public int FlagAt; public bool Unlocked; }
     class StashWeapon { public uint Hash; public int FlagAt; public bool Unlocked; }
@@ -450,6 +648,8 @@ namespace MpCharacterEditor
         const int RespectAt = 0x90, RespectTotalAt = 0x94, RespectNeededAt = 0x98, CashAt = 0xA0;
         // (count, pointer) pairs in the header.
         const int WeaponsAt = 0x144, FoodAt = 0x240, HomiesAt = 0x6E88, HoodsAt = 0x6E90, StashAt = 0x6F8C, EndPointerAt = 0x6FF8;
+        // What the player wears: count, then 16-byte records in the header (room for 128).
+        const int OutfitCountAt = 0x64C, OutfitAt = 0x650;
         const uint UnlockedFlag = 0x80000000u;
 
         public readonly string Path;
@@ -460,7 +660,9 @@ namespace MpCharacterEditor
         // Weapons on the wheel (name, loaded, spare ammo) and the food carried, in file order.
         public List<CarriedWeapon> Weapons = new List<CarriedWeapon>();
         public List<string> Food = new List<string>();
-        string loaded;
+        // What the player wears, one record per body slot.
+        public List<WornItem> Outfit = new List<WornItem>();
+        string loaded, loadedOutfit;
 
         public StorySave(string path)
         {
@@ -486,6 +688,8 @@ namespace MpCharacterEditor
                     if (n != null) Food.Add(n);
                 }
             loaded = Inventory();
+            Outfit = WardrobeTables.Read(data, OutfitCountAt, OutfitAt, WardrobeTables.MaxWorn);
+            loadedOutfit = WardrobeTables.Describe(Outfit);
             if (List(HomiesAt, 12, 64, out count, out at))
                 for (int i = 0; i < count; i++)
                 {
@@ -625,6 +829,11 @@ namespace MpCharacterEditor
         public string Save()
         {
             WriteInventory();
+            if (WardrobeTables.Describe(Outfit) != loadedOutfit)
+            {
+                WardrobeTables.Write(data, OutfitCountAt, OutfitAt, WardrobeTables.MaxWorn, Outfit);
+                loadedOutfit = WardrobeTables.Describe(Outfit);
+            }
             string backup = Backup(Path);
             File.WriteAllBytes(Path, data);
             return backup;

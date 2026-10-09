@@ -16,6 +16,8 @@ final class SinglePlayerSave {
     // (count, pointer) pairs in the header.
     private static let weaponsAt = 0x144, foodAt = 0x240, contactsAt = 0x6E88, hoodsAt = 0x6E90, stashAt = 0x6F8C
     private static let endPointerAt = 0x6FF8
+    // What the player wears: count, then 16-byte records in the header (room for 128).
+    private static let outfitCountAt = 0x64C, outfitAt = 0x650
     private static let unlockedFlag: UInt32 = 0x8000_0000
 
     private(set) var data: Data
@@ -26,8 +28,11 @@ final class SinglePlayerSave {
     /// Weapons on the wheel (name, magazine, spare ammo) and the food carried, in file order.
     var weapons: [CarriedWeapon] = []
     var food: [String] = []
+    /// What the player wears, one record per body slot.
+    var outfit: [WornItem] = []
     private var loadedWeapons: [CarriedWeapon] = []
     private var loadedFood: [String] = []
+    private var loadedOutfit: [WornItem] = []
 
     init(url: URL) throws {
         self.url = url
@@ -71,6 +76,8 @@ final class SinglePlayerSave {
             for i in 0..<l.count { if let n = name(at: u32(l.pointer + i * 4)) { food.append(n) } }
         }
         loadedWeapons = weapons; loadedFood = food
+        outfit = [WornItem].read(u32, countAt: Self.outfitCountAt, at: Self.outfitAt, max: WardrobeTables.maxWorn)
+        loadedOutfit = outfit
         if let l = list(Self.contactsAt, recordSize: 12, limit: 64) {
             for i in 0..<l.count {
                 let o = l.pointer + i * 12
@@ -155,8 +162,17 @@ final class SinglePlayerSave {
     }
 
     /// Writes the save, keeping the previous file next to it as game.dat.<date>-<time>.bak.
+    private func writeOutfit() {
+        guard outfit != loadedOutfit else { return }
+        let worn = Array(outfit.prefix(WardrobeTables.maxWorn))
+        setU32(Self.outfitCountAt, UInt32(worn.count))
+        data.replaceSubrange(Self.outfitAt..<Self.outfitAt + WardrobeTables.maxWorn * 16, with: worn.records(max: WardrobeTables.maxWorn))
+        loadedOutfit = outfit
+    }
+
     func write() throws -> URL {
         writeInventory()
+        writeOutfit()
         let backup = try Backups.keep(url)
         try data.write(to: url, options: .atomic)
         return backup
