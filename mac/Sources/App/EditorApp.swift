@@ -351,6 +351,7 @@ struct ContentView: View {
     @State var clothingSearch = ""
     @State var onlineTab = 0
     @State var wardrobeTab = 0
+    @State var selectedCar: Int?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -479,10 +480,10 @@ struct ContentView: View {
         if let tables = editor.tables {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    Text("\(save.vehicles.count) in the garage. Another keeps the paint and parts; a new model keeps them too, and the game may reset ones that don't fit.").foregroundColor(.secondary)
+                    Text("\(save.vehicles.count) in the garage. Click a car for its paint and parts.").foregroundColor(.secondary)
                     Spacer()
                 }.padding(10)
-                List(Array(save.vehicles.enumerated()), id: \.offset) { i, v in
+                List(Array(save.vehicles.enumerated()), id: \.offset, selection: $selectedCar) { i, v in
                     HStack {
                         Text("#\(v.id)").foregroundColor(.secondary).frame(width: 40, alignment: .leading)
                         Picker("", selection: Binding(get: { v.hash }, set: { save.vehicles[i].hash = $0; editor.touch() })) {
@@ -498,10 +499,60 @@ struct ContentView: View {
                         } else { Text("Mint").foregroundColor(.secondary) }
                         Button("Another") { save.duplicateVehicle(at: i); editor.touch() }
                         Button("Remove") { save.vehicles.remove(at: i); editor.touch() }
-                    }
-                }.id(editor.revision)
+                    }.tag(i)
+                }.id(editor.revision).frame(maxHeight: 260)
+                Divider()
+                if let i = selectedCar, save.vehicles.indices.contains(i) { carDetail(save, i, tables) }
+                else { Text("Click a car above to change its paint and parts.").foregroundColor(.secondary).padding().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading) }
             }
         } else { needsGameFiles }
+    }
+
+    /// Paint and parts of one car: a row per slot of the model's own table.
+    @ViewBuilder func carDetail(_ save: SinglePlayerSave, _ i: Int, _ tables: GameTables) -> some View {
+        let v = save.vehicles[i]
+        if let custom = tables.vehicleCustom, let model = tables.vehicle(hash: v.hash) {
+            let slots = custom.slots(for: model.name)
+            if slots.isEmpty {
+                Text("The shops don't take a \(model.title).").foregroundColor(.secondary).padding()
+            } else {
+                Form {
+                    ForEach(slots) { slot in
+                        let entry = v.entry(slot: slot.id)
+                        if slot.isColor {
+                            let palettes = custom.palettes
+                            let current = entry?.colors.first
+                            HStack {
+                                Picker(slot.name, selection: Binding(get: { current?.palette ?? -1 }, set: { p in
+                                    if p < 0 { save.vehicles[i].clearCustom(slot: slot.id) }
+                                    else { save.vehicles[i].setCustom(slot: slot.id, component: 0, colors: Array(repeating: CustomColor(palette: p, color: 0), count: max(1, slot.components[0].colorSlots.count))) }
+                                    editor.touch()
+                                })) {
+                                    Text("Stock").tag(-1)
+                                    ForEach(palettes) { Text($0.name).tag($0.id) }
+                                }.frame(maxWidth: 360)
+                                if let c = current, let p = custom.palette(c.palette) {
+                                    Picker("", selection: Binding(get: { c.color }, set: { col in
+                                        save.vehicles[i].setCustom(slot: slot.id, component: 0, colors: Array(repeating: CustomColor(palette: c.palette, color: col), count: max(1, slot.components[0].colorSlots.count)))
+                                        editor.touch()
+                                    })) {
+                                        ForEach(Array(p.colors.enumerated()), id: \.offset) { k, name in Text(name).tag(k) }
+                                    }.labelsHidden().frame(maxWidth: 260)
+                                }
+                            }
+                        } else {
+                            Picker(slot.name, selection: Binding(get: { entry?.component ?? -1 }, set: { c in
+                                if c < 0 { save.vehicles[i].clearCustom(slot: slot.id) } else { save.vehicles[i].setCustom(slot: slot.id, component: c, colors: []) }
+                                editor.touch()
+                            })) {
+                                Text("Stock").tag(-1)
+                                ForEach(Array(slot.components.enumerated()), id: \.offset) { k, c in Text(c.name).tag(k) }
+                            }.frame(maxWidth: 360)
+                        }
+                    }
+                }.formStyle(.grouped)
+            }
+        } else { Text("The paint and parts tables were not found (misc2.vpp_xbox2).").foregroundColor(.secondary).padding() }
     }
 
     func stashScreen(_ save: SinglePlayerSave) -> some View {

@@ -9,6 +9,7 @@ guard args.count >= 3 else {
                   weapon:<name>=<magazine>/<spare>|none food=<name,name,...> stash:<name|all>=<0|1>
                   wear:<item id>=<variant id>/<mesh id>   wear:<slot number>=none   own:<item id>/<variant id>=<0|1>
                   vehicle:<car number>=<model name>|none|repair   vehicle:add=<car number>  (another like it)
+                  custom:<car number>=<slot>/<component>[/<palette>/<colour>]   custom:<car number>=<slot>/none
     """)
     exit(2)
 }
@@ -91,6 +92,18 @@ do {
                 for (i, s) in save.stash.enumerated() where n == "all" || s.hash == GameTables.hash(n) { save.setStash(i, unlocked: kv[1] == "1") }
             } else if kv[0].hasPrefix("wear:") { dress(&save.outfit, kv[0], kv[1], wardrobe)
             } else if kv[0].hasPrefix("own:") { own(&save.owned, kv[0], kv[1])
+            } else if kv[0].hasPrefix("custom:"), let id = UInt32(kv[0].dropFirst(7)), let i = save.vehicles.firstIndex(where: { $0.id == id }) {
+                let p = kv[1].split(separator: "/").map(String.init)
+                if p.count == 2, p[1] == "none", let s = Int(p[0]) { save.vehicles[i].clearCustom(slot: s) }
+                else if p.count >= 2, let s = Int(p[0]), let c = Int(p[1]) {
+                    var colors: [CustomColor] = []
+                    if p.count == 4, let pal = Int(p[2]), let col = Int(p[3]) {
+                        // One pair per colour sub-slot of the component.
+                        let n = tables?.vehicleCustom?.slots(for: tables?.vehicle(hash: save.vehicles[i].hash)?.name ?? "").first { $0.id == s }?.components.first?.colorSlots.count ?? 1
+                        colors = Array(repeating: CustomColor(palette: pal, color: col), count: max(1, n))
+                    }
+                    save.vehicles[i].setCustom(slot: s, component: c, colors: colors)
+                }
             } else if kv[0].hasPrefix("vehicle:") {
                 let which = String(kv[0].dropFirst(8))
                 if which == "add", let id = UInt32(kv[1]), let i = save.vehicles.firstIndex(where: { $0.id == id }) { save.duplicateVehicle(at: i) }
@@ -122,6 +135,17 @@ do {
         let pct = info.map { Int(100 * Double(v.hitpoints) / Double($0.maxHitpoints)) }
         return "#\(v.id) \(info?.title ?? String(format: "%08X", v.hash)) [\(pct.map { "\($0)%" } ?? "\(v.hitpoints)hp")\(v.repairBill > 0 ? String(format: ", $%.0f bill", v.repairBill) : "")\(v.dents > 0 ? ", \(v.dents) dents" : "")]"
     }.joined(separator: ", "))
+    if let custom = tables?.vehicleCustom {
+        for v in save.vehicles {
+            let slots = custom.slots(for: tables?.vehicle(hash: v.hash)?.name ?? "")
+            let parts = v.customization.map { e -> String in
+                let slot = slots.first { $0.id == e.slot }
+                let comp = slot?.components.indices.contains(e.component) == true ? slot!.components[e.component].name : "component \(e.component)"
+                return "\(slot?.name ?? "slot \(e.slot)")=\(comp)" + (e.colors.isEmpty ? "" : " [" + e.colors.map { custom.colorName($0) }.joined(separator: ", ") + "]")
+            }
+            print("  car #\(v.id):", parts.isEmpty ? "stock" : parts.joined(separator: "; "))
+        }
+    }
     print("owned clothing: \(save.owned.count):", save.owned.map { "\($0.item)/\($0.variant)" }.joined(separator: " "))
     print("stash:", save.stash.map { "\(tables?.name(hash: $0.hash) ?? String($0.hash, radix: 16))\($0.unlocked ? "*" : "")" }.joined(separator: ", "))
     print("contacts:", save.contacts.map { "\($0.name)\($0.unlocked ? "*" : "")" }.joined(separator: ", "))

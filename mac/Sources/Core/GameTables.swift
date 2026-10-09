@@ -29,6 +29,8 @@ final class GameTables {
     let pack: Packfile
     let packfilesFolder: URL
     private(set) lazy var icons: GameIcons? = GameIcons(tables: self, packfiles: packfilesFolder)
+    /// Paint and parts for the garage (misc2.vpp_xbox2), read the first time they are needed.
+    private(set) lazy var vehicleCustom: VehicleCustomTables? = VehicleCustomTables(tables: self)
 
     static func find(near url: URL?) -> URL? {
         var tries: [URL] = []

@@ -10,7 +10,8 @@ Mac and Windows.
   necklaces, medallions, pendants, bracelets, watches, rings, underwear, pants,
   socks and shoes. Belts, piercings and tattoos are not in yet.
 - The garage: see the cars by name and condition, repair one, add another
-  like one, remove one, or change the model.
+  like one, remove one, change the model, and change the paint and parts
+  from the game's own lists.
 - Restore backup for story saves (and for the online character on Mac).
 - `tests/compare.sh` checks that both versions write identical saves.
 
