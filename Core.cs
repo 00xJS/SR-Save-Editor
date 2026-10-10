@@ -143,6 +143,8 @@ namespace MpCharacterEditor
         public Packfile Pack2 { get { return pack2 ?? (pack2 = new Packfile(Path.Combine(dist, @"game\packfiles\misc2.vpp_xbox2"))); } }
         VehicleCustomTables vehicleCustom;
         public VehicleCustomTables VehicleCustom { get { return vehicleCustom ?? (vehicleCustom = VehicleCustomTables.Open(this)); } }
+        VariantTables variants;
+        public VariantTables Variants { get { return variants ?? (variants = new VariantTables(this)); } }
         public readonly Dictionary<string, string> Strings = new Dictionary<string, string>();
         public readonly Dictionary<string, WeaponInfo> Weapons = new Dictionary<string, WeaponInfo>();   // by lower-case name
         public readonly List<string> Offered = new List<string>();   // sold in stores or kept at the crib
@@ -857,6 +859,41 @@ namespace MpCharacterEditor
             SetCustomization(list);
         }
 
+        // ---- The variant section: its length byte at 0x15, the bytes from 0x16 ----
+        const int SectionLengthAt = 0x15, SectionAt = 0x16;
+        public int SectionLength
+        {
+            get { return Raw[0x11] == 0x0A && Raw[0x12] == 0x55 && Raw[0x13] == 0xB0 ? Math.Min((int)Raw[SectionLengthAt], CustomEnd - SectionAt) : 0; }
+        }
+        // The police car's unit number, painted on the roof and doors: two of the material
+        // variables in the variant section. Byte 12 is the tens, byte 10 the ones, and a byte b
+        // shows the digit (10 - b) mod 10, because the game lists the digit textures 0, 9, 8 ... 1.
+        // Found by writing known patterns into a save and reading the cars in the game.
+        const int UnitTensAt = 12, UnitOnesAt = 10;
+        public static bool HasUnitNumber(string model, int sectionLength)
+        {
+            return string.Equals(model, "car_4dr_police01", StringComparison.OrdinalIgnoreCase) && sectionLength > UnitTensAt;
+        }
+        static int Digit(byte b) { return (10 - b % 10) % 10; }
+        public int UnitNumber
+        {
+            get { return Digit(SectionByte(UnitTensAt)) * 10 + Digit(SectionByte(UnitOnesAt)); }
+            set
+            {
+                value = Math.Max(0, Math.Min(99, value));
+                SetSectionByte(UnitTensAt, (byte)((10 - value / 10) % 10));
+                SetSectionByte(UnitOnesAt, (byte)((10 - value % 10) % 10));
+            }
+        }
+        public string SectionHex(int from)
+        {
+            StringBuilder sb = new StringBuilder();
+            for (int i = from; i < SectionLength; i++) sb.Append(Raw[SectionAt + i].ToString("x2")).Append(' ');
+            return sb.ToString().Trim();
+        }
+        public byte SectionByte(int i) { return i >= 0 && i < SectionLength ? Raw[SectionAt + i] : (byte)0; }
+        public void SetSectionByte(int i, byte v) { if (i >= 0 && i < SectionLength) Raw[SectionAt + i] = v; }
+
         public bool Damaged(uint maxHitpoints) { return Hitpoints < maxHitpoints || RepairBill > 0 || Dents > 0; }
         // As the mechanic leaves it: full hit points, no bill, no dents, every part back up.
         // The save does not say what kind each part is, so a damaged part is raised to the
@@ -878,6 +915,70 @@ namespace MpCharacterEditor
             for (int o = FlagsAt; o < FlagsEnd; o += 4) Be.Put(Raw, o, 0);
         }
     }
+    // The random looks of a model: the variants in its own table (<model>.xtbl in misc.vpp_xbox2),
+    // each with groups of parts (VID groups: flashers, light bars, hoods...) and groups of materials.
+    // The save keeps the choices in the variant section of a car record: the variant's index, one
+    // byte per part group (the choice, or the group's size for "none"), one byte per material group,
+    // then the material variables (the police unit number is in there).
+    class VariantGroup { public string Name; public List<string> Choices = new List<string>(); }
+    class VehicleVariant
+    {
+        public string Name;
+        public List<VariantGroup> Parts = new List<VariantGroup>(), Materials = new List<VariantGroup>();
+        public override string ToString() { return Name; }
+    }
+    class VariantTables
+    {
+        readonly GameData game;
+        readonly Dictionary<string, List<VehicleVariant>> byModel = new Dictionary<string, List<VehicleVariant>>();
+        public VariantTables(GameData game) { this.game = game; }
+
+        // Empty for a model without a table.
+        public List<VehicleVariant> Variants(string model)
+        {
+            List<VehicleVariant> list;
+            if (model == null) return new List<VehicleVariant>();
+            if (byModel.TryGetValue(model.ToLowerInvariant(), out list)) return list;
+            list = new List<VehicleVariant>();
+            try
+            {
+                XmlDocument doc = new XmlDocument();
+                doc.LoadXml(Encoding.GetEncoding(28591).GetString(game.Pack.Read(model + ".xtbl")));
+                foreach (XmlNode v in doc.SelectNodes("/root/Table/Mesh/Variants/Variant"))
+                {
+                    VehicleVariant variant = new VehicleVariant();
+                    variant.Name = Str(v, "Name");
+                    foreach (XmlNode g in v.SelectNodes("Variant_IDs/Vid_group"))
+                    {
+                        VariantGroup group = new VariantGroup(); group.Name = Str(g, "Name");
+                        foreach (XmlNode c in g.SelectNodes("Vid_chances/Vid_chance"))
+                        {
+                            string d = Str(c, "Description");
+                            group.Choices.Add(d.Length > 0 ? d : "parts " + Str(c, "VID_list"));
+                        }
+                        variant.Parts.Add(group);
+                    }
+                    foreach (XmlNode g in v.SelectNodes("Materials/Material_group"))
+                    {
+                        VariantGroup group = new VariantGroup(); group.Name = Str(g, "Name");
+                        foreach (XmlNode c in g.SelectNodes("Material_chances/Material_chance")) group.Choices.Add(Str(c, "Name"));
+                        variant.Materials.Add(group);
+                    }
+                    list.Add(variant);
+                }
+            }
+            catch (Exception ex) { list.Clear(); LastError = model + ": " + ex.Message; }
+            byModel[model.ToLowerInvariant()] = list;
+            return list;
+        }
+        public string LastError = "";
+        static string Str(XmlNode n, string child)
+        {
+            XmlNode c = n[child];
+            return c == null ? "" : c.InnerText.Trim();
+        }
+    }
+
     class CarriedWeapon
     {
         public string Name; public uint Count = 1, Clip, Reserve;

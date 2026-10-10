@@ -469,6 +469,10 @@ namespace MpCharacterEditor
             choiceList.View = View.Details; choiceList.FullRowSelect = true; choiceList.HideSelection = false; choiceList.MultiSelect = false;
             choiceList.Columns.Add("Item", 230); choiceList.Columns.Add("Colour / style", 230); choiceList.Columns.Add("Category", 120);
             choiceList.Dock = DockStyle.Fill;
+            // Refilled once the window exists - after OnHandleCreated has finished, since changing
+            // the items inside it crashes .NET's ListView.
+            choiceList.HandleCreated += delegate { BeginInvoke((Action)ShowChoices); };
+            slotList.HandleCreated += delegate { BeginInvoke((Action)Refresh); };
             choiceList.ItemSelectionChanged += delegate(object o, ListViewItemSelectionChangedEventArgs e)
             {
                 if (filling || !e.IsSelected) return;
@@ -499,7 +503,7 @@ namespace MpCharacterEditor
             {
                 WornItem w = WardrobeTables.WornIn(outfit, (int)row.Tag);
                 row.SubItems[1].Text = w == null ? "" : tables.Title(w) + (tables.Style(w).Length > 0 ? " - " + tables.Style(w) : "");
-                row.Selected = (int)row.Tag == slot;
+                if (slotList.IsHandleCreated) row.Selected = (int)row.Tag == slot;
             }
             int others = 0;
             foreach (WornItem w in outfit) if (WardrobeTables.Slot(w.Slot) == null) others++;
@@ -531,6 +535,10 @@ namespace MpCharacterEditor
             filling = true;
             choiceList.BeginUpdate();
             choiceList.Items.Clear();
+            // Selecting a row before the list has its window makes .NET keep a stale "saved
+            // selection" after the next Clear(), and it crashes in OnHandleCreated when the tab is
+            // first shown. So the row is selected only once the window exists (HandleCreated refills).
+            ListViewItem chosen = null;
             foreach (WardrobeItem item in tables.Choices(slot))
             {
                 List<WearOption> options = item.OptionsIn(slot);
@@ -542,12 +550,12 @@ namespace MpCharacterEditor
                     if (q.Length > 0 && (item.Title + " " + v.Title + " " + item.Category).ToLowerInvariant().IndexOf(q) < 0) continue;
                     ListViewItem row = new ListViewItem(new string[] { item.Title, v.Title, item.Category });
                     row.Tag = new WornItem(item.Id, v.Id, slot, options[0].Mesh);
-                    row.Selected = now != null && now.Item == item.Id && now.Variant == v.Id;
+                    if (now != null && now.Item == item.Id && now.Variant == v.Id) chosen = row;
                     choiceList.Items.Add(row);
                 }
             }
             choiceList.EndUpdate();
-            if (choiceList.SelectedItems.Count > 0) choiceList.EnsureVisible(choiceList.SelectedItems[0].Index);
+            if (chosen != null && choiceList.IsHandleCreated) { chosen.Selected = true; choiceList.EnsureVisible(chosen.Index); }
             filling = false;
         }
     }
@@ -605,6 +613,7 @@ namespace MpCharacterEditor
                 Set(p, e.NewValue == CheckState.Checked);
                 changed();
             };
+            list.HandleCreated += delegate { BeginInvoke((Action)Fill); };   // after OnHandleCreated, see WardrobePanel
             Controls.Add(list); Controls.Add(filter);
         }
 
@@ -653,8 +662,11 @@ namespace MpCharacterEditor
                 foreach (WardrobeVariant v in item.Variants) if (v.Id == p.Variant) style = v.Title;
                 if (q.Length > 0 && (item.Title + " " + style + " " + item.Category).ToLowerInvariant().IndexOf(q) < 0) continue;
                 ListViewItem row = new ListViewItem(new string[] { item.Title, style, item.Category, locked.Contains(p.Key) ? "wearing" : "" });
-                row.Tag = p; row.Checked = has;
+                row.Tag = p;
                 list.Items.Add(row);
+                // A tick set before the list has its window crashes .NET's ListView when the window
+                // is made (or remade); the list is refilled on HandleCreated instead.
+                if (list.IsHandleCreated) row.Checked = has;
             }
             list.EndUpdate();
             filling = false;
@@ -676,6 +688,9 @@ namespace MpCharacterEditor
         readonly ComboBox modelBox = new ComboBox(), partBox = new ComboBox(), paletteBox = new ComboBox(), colourBox = new ComboBox();
         readonly Label garageNote = new Label(), optionTitle = new Label();
         readonly Button stockButton = new Button();
+        // The variant row of the garage: variant, one box per part group, the material bytes.
+        readonly FlowLayoutPanel variantRow = Row();
+        readonly TextBox variantBytes = new TextBox();
         readonly TabControl wardrobeTabs = new TabControl();
 
         // Story save.
@@ -763,6 +778,7 @@ namespace MpCharacterEditor
 
             SetUpList(itemList, true, "Item", 250, "Colour / style", 250, "Category", 110, "", 110);
             itemList.ItemCheck += ItemCheck;
+            itemList.HandleCreated += delegate { BeginInvoke((Action)FillItems); };
 
             TabControl tabs = new TabControl();
             tabs.Dock = DockStyle.Fill;
@@ -1062,6 +1078,65 @@ namespace MpCharacterEditor
             return parts.Length >= 5 ? parts[3].Replace('_', '/') + " " + parts[4].Replace('_', ':') : folder;
         }
 
+        // Testing ("--ui-check"): opens every story save and clicks every car, reporting any exception.
+        public string UiCheck()
+        {
+            StringBuilder sb = new StringBuilder();
+            // Give every list its window first, one by one, naming the one that fails.
+            List<Control> all = new List<Control>();
+            Stack<Control> stack = new Stack<Control>(); stack.Push(this);
+            while (stack.Count > 0) { Control c = stack.Pop(); all.Add(c); foreach (Control k in c.Controls) stack.Push(k); }
+            string trace = Path.Combine(Path.GetTempPath(), "ui-check-lists.txt");
+            File.WriteAllText(trace, "");
+            foreach (Control c in all)
+            {
+                ListView lv = c as ListView;
+                if (lv == null) continue;
+                string what = "ListView '" + (lv.Columns.Count > 0 ? lv.Columns[0].Text : "?") + "' (" + lv.Items.Count + " rows, parent " + (lv.Parent == null ? "none" : lv.Parent.GetType().Name) + ")";
+                lv.HandleDestroyed += delegate { File.AppendAllText(trace, DateTime.Now.ToString("HH:mm:ss.fff") + " destroyed " + what + "\r\n" + Environment.StackTrace + "\r\n"); };
+                lv.HandleCreated += delegate { File.AppendAllText(trace, DateTime.Now.ToString("HH:mm:ss.fff") + " created " + what + " (" + lv.Items.Count + " rows)\r\n"); };
+                try { IntPtr x = lv.Handle; sb.AppendLine(what + " ok"); }
+                catch (Exception ex) { sb.AppendLine(what + " EXCEPTION: " + ex.Message); }
+            }
+            IntPtr h = garageList.Handle; h = optionList.Handle; h = variantRow.Handle;   // the garage tab is not shown: make the controls real
+            // Visit every tab the way a click would, so each control gets its window.
+            for (int s = 0; s < sections.TabPages.Count; s++)
+            {
+                try { sections.SelectedIndex = s; Application.DoEvents(); sb.AppendLine("section " + s + " " + sections.TabPages[s].Text + " ok"); }
+                catch (Exception ex) { sb.AppendLine("section " + s + " EXCEPTION: " + ex); }
+                if (s != 0) continue;
+                for (int t = 0; t < storyTabs.TabPages.Count; t++)
+                {
+                    try { storyTabs.SelectedIndex = t; Application.DoEvents(); sb.AppendLine("  story tab " + t + " " + storyTabs.TabPages[t].Text + " ok"); }
+                    catch (Exception ex) { sb.AppendLine("  story tab " + t + " " + storyTabs.TabPages[t].Text + " EXCEPTION: " + ex); }
+                    for (int w = 0; storyTabs.TabPages[t] == wardrobePage && w < wardrobeTabs.TabPages.Count; w++)
+                    {
+                        try { wardrobeTabs.SelectedIndex = w; Application.DoEvents(); sb.AppendLine("    wardrobe tab " + w + " ok"); }
+                        catch (Exception ex) { sb.AppendLine("    wardrobe tab " + w + " EXCEPTION: " + ex); }
+                    }
+                }
+            }
+            for (int i = 0; i < storyBox.Items.Count; i++)
+            {
+                try
+                {
+                    storyBox.SelectedIndex = i; LoadStory();
+                    sb.AppendLine("save " + storyBox.Items[i] + ": " + (story == null ? "not loaded" : story.Vehicles.Count + " cars"));
+                    if (story == null) continue;
+                    for (int k = 0; k < garageList.Items.Count; k++)
+                    {
+                        garageList.Items[k].Selected = true;
+                        ShowOptions();
+                        sb.AppendLine("  car " + garageList.Items[k].SubItems[1].Text + ": variant row " + (variantRow.Controls.Count > 0 ? variantRow.Controls.Count + " controls, bytes '" + variantBytes.Text + "'" : "hidden") + ", option rows " + optionList.Items.Count + ", selected " + garageList.SelectedIndices.Count
+                            + ", section " + story.Vehicles[k].SectionLength + " bytes, variants " + game.Variants.Variants(game.Vehicle(story.Vehicles[k].Hash).Name).Count + " " + game.Variants.LastError);
+                        for (int o = 0; o < optionList.Items.Count; o++) { optionList.Items[o].Selected = true; ShowPicker(); }
+                    }
+                }
+                catch (Exception ex) { sb.AppendLine("EXCEPTION: " + ex); }
+            }
+            return sb.ToString();
+        }
+
         void LoadStoryList()
         {
             storyFiles.Clear();
@@ -1191,6 +1266,9 @@ namespace MpCharacterEditor
             optionList.MultiSelect = false;
             optionList.SelectedIndexChanged += delegate { ShowPicker(); };
             Panel lower = Fill(optionList, pick);
+            // The random looks (flashers, light bars, hoods...) of models with a variant table, above the paint row.
+            variantRow.WrapContents = true;
+            lower.Controls.Add(variantRow);
 
             Panel p = new Panel(); p.Dock = DockStyle.Fill;
             p.Controls.Add(lower); p.Controls.Add(garageList); p.Controls.Add(top);
@@ -1225,9 +1303,94 @@ namespace MpCharacterEditor
                 optionTitle.Text = slots.Count > 0 ? info.Title + ": pick a slot" : "The shops don't take a " + info.Title + ".";
             }
             else optionTitle.Text = v == null ? "Click a car for its paint and parts." : "The paint and parts tables were not found (misc2.vpp_xbox2).";
-            if (keep >= 0 && keep < optionList.Items.Count) optionList.Items[keep].Selected = true;
+            if (keep >= 0 && keep < optionList.Items.Count && optionList.IsHandleCreated) optionList.Items[keep].Selected = true;
             optionList.EndUpdate();
             ShowPicker();
+            ShowVariant();
+        }
+
+        // The variant section of the selected car: the variant, a box per part group (with "None"
+        // for a group the game may leave out), and the material bytes as hex for now - the police
+        // unit number is in there, but which byte is which digit is not known yet.
+        void ShowVariant()
+        {
+            GarageVehicle v = SelectedCar();
+            VehicleInfo info = v == null || game == null ? null : game.Vehicle(v.Hash);
+            List<VehicleVariant> variants = info == null ? new List<VehicleVariant>() : game.Variants.Variants(info.Name);
+            filling = true;
+            variantRow.SuspendLayout();
+            variantRow.Controls.Clear();
+            bool show = variants.Count > 0 && v.SectionLength > 0;
+            variantRow.Visible = show;
+            if (show)
+            {
+                int which = Math.Min(v.SectionByte(0), variants.Count - 1);
+                VehicleVariant variant = variants[which];
+                variantRow.Controls.Add(Caption("Variant"));
+                ComboBox box = new ComboBox(); box.DropDownStyle = ComboBoxStyle.DropDownList; box.Width = 130;
+                foreach (VehicleVariant x in variants) box.Items.Add(x);
+                box.SelectedIndex = which;
+                box.SelectedIndexChanged += delegate
+                {
+                    if (filling || SelectedCar() == null) return;
+                    SelectedCar().SetSectionByte(0, (byte)box.SelectedIndex); StoryChanged(); ShowVariant();
+                };
+                variantRow.Controls.Add(box);
+                int at = 1;
+                foreach (VariantGroup g in variant.Parts)
+                {
+                    int index = at++;
+                    if (index >= v.SectionLength) break;
+                    variantRow.Controls.Add(Caption(g.Name));
+                    ComboBox pick = new ComboBox(); pick.DropDownStyle = ComboBoxStyle.DropDownList; pick.Width = 120;
+                    foreach (string c in g.Choices) pick.Items.Add(c);
+                    pick.Items.Add("None");
+                    int now = v.SectionByte(index);
+                    if (now > g.Choices.Count) pick.Items.Add("value " + now);
+                    pick.SelectedIndex = Math.Min(now, pick.Items.Count - 1);
+                    pick.SelectedIndexChanged += delegate
+                    {
+                        if (filling || SelectedCar() == null) return;
+                        SelectedCar().SetSectionByte(index, (byte)pick.SelectedIndex); StoryChanged();
+                    };
+                    variantRow.Controls.Add(pick);
+                }
+                at += variant.Materials.Count;   // one pick per material group; the choices are rarely more than one
+                variantRow.Controls.Add(Caption("Material bytes"));
+                variantBytes.Width = 200; variantBytes.Text = v.SectionHex(Math.Min(at, v.SectionLength));
+                int first = at;
+                variantBytes.Tag = first;
+                variantRow.Controls.Add(variantBytes);
+                Button apply = new Button(); apply.Text = "Apply"; apply.AutoSize = true;
+                apply.Click += delegate
+                {
+                    GarageVehicle car = SelectedCar();
+                    if (car == null) return;
+                    string[] parts = variantBytes.Text.Split(new char[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+                    for (int k = 0; k < parts.Length && first + k < car.SectionLength; k++)
+                    {
+                        byte b;
+                        if (byte.TryParse(parts[k], System.Globalization.NumberStyles.HexNumber, null, out b)) car.SetSectionByte(first + k, b);
+                    }
+                    StoryChanged(); ShowVariant();
+                };
+                variantRow.Controls.Add(apply);
+                if (GarageVehicle.HasUnitNumber(info.Name, v.SectionLength))
+                {
+                    variantRow.Controls.Add(Caption("Unit number"));
+                    NumericUpDown unit = new NumericUpDown(); unit.Minimum = 0; unit.Maximum = 99; unit.Width = 50;
+                    unit.Value = v.UnitNumber;
+                    unit.ValueChanged += delegate
+                    {
+                        if (filling || SelectedCar() == null) return;
+                        SelectedCar().UnitNumber = (int)unit.Value; StoryChanged();
+                        filling = true; variantBytes.Text = SelectedCar().SectionHex((int)variantBytes.Tag); filling = false;
+                    };
+                    variantRow.Controls.Add(unit);
+                }
+            }
+            variantRow.ResumeLayout();
+            filling = false;
         }
 
         void ShowPicker()
@@ -1301,7 +1464,7 @@ namespace MpCharacterEditor
                 garageList.Items.Add(new ListViewItem(new string[] { "#" + v.Id, info != null ? info.Title : "Unknown " + v.Hash.ToString("X8"),
                     condition, info != null ? info.Category : "", info != null ? info.Name : "" }));
             }
-            if (selected >= 0 && selected < garageList.Items.Count) garageList.Items[selected].Selected = true;
+            if (selected >= 0 && selected < garageList.Items.Count && garageList.IsHandleCreated) garageList.Items[selected].Selected = true;
             garageList.EndUpdate();
             garageNote.Text = story.Vehicles.Count + " in the garage";
             ShowOptions();
@@ -1340,7 +1503,7 @@ namespace MpCharacterEditor
                 if (h.Owner == 0) saints++;
                 hoodList.Items.Add(new ListViewItem(new string[] { h.Name, h.Owner < StorySave.Gangs.Length ? StorySave.Gangs[h.Owner] : "?" }));
             }
-            foreach (int i in selected) if (i < hoodList.Items.Count) hoodList.Items[i].Selected = true;
+            foreach (int i in selected) if (i < hoodList.Items.Count && hoodList.IsHandleCreated) hoodList.Items[i].Selected = true;
             hoodList.EndUpdate();
             hoodNote.Text = saints + " of " + story.Hoods.Count + " held by the Saints";
         }
@@ -1598,8 +1761,8 @@ namespace MpCharacterEditor
                 if (search.Length > 0 && (title + " " + style + " " + cat).ToLowerInvariant().IndexOf(search) < 0) continue;
                 ListViewItem row = new ListViewItem(new string[] { title, style, cat, worn.Contains(p.Key) ? "wearing" : "" });
                 row.Tag = p;
-                row.Checked = has;
                 itemList.Items.Add(row);
+                if (itemList.IsHandleCreated) row.Checked = has;   // see OwnedPanel.Fill
             }
             itemList.EndUpdate();
             filling = false;
@@ -1787,6 +1950,16 @@ namespace MpCharacterEditor
                         s.Vehicles[at].SetCustom(slot, int.Parse(p[1]), colors);
                     }
                 }
+                else if (key.StartsWith("unit:"))   // unit:<car>=<number>  (police unit number)
+                {
+                    for (int k = 0; k < s.Vehicles.Count; k++) if (s.Vehicles[k].Id.ToString() == key.Substring(5)) s.Vehicles[k].UnitNumber = int.Parse(value);
+                }
+                else if (key.StartsWith("variant:"))   // variant:<car>=<byte index>:<value>
+                {
+                    string[] p = value.Split(':');
+                    for (int k = 0; k < s.Vehicles.Count; k++)
+                        if (s.Vehicles[k].Id.ToString() == key.Substring(8) && p.Length == 2) s.Vehicles[k].SetSectionByte(int.Parse(p[0]), byte.Parse(p[1]));
+                }
                 else if (key.StartsWith("vehicle:"))
                 {
                     string which = key.Substring(8);
@@ -1828,6 +2001,11 @@ namespace MpCharacterEditor
             StringBuilder g = new StringBuilder();
             foreach (GarageVehicle v in s.Vehicles) g.Append('#').Append(v.Id).Append(' ').Append(v.Hash.ToString("x8")).Append(' ');
             sb.AppendLine("garage " + g);
+            foreach (GarageVehicle v in s.Vehicles)
+            {
+                VehicleInfo info = GameNear(args[1]).Vehicle(v.Hash);
+                sb.AppendLine("variant #" + v.Id + " " + v.SectionHex(0) + (info != null && GarageVehicle.HasUnitNumber(info.Name, v.SectionLength) ? "  unit " + v.UnitNumber.ToString("00") : ""));
+            }
             int unlocked = 0;
             foreach (StashWeapon w in s.Stash) if (w.Unlocked) unlocked++;
             sb.AppendLine("stash " + unlocked + "/" + s.Stash.Count + ", homies " + s.Homies.Count + ", neighbourhoods " + s.Hoods.Count);
@@ -1933,7 +2111,20 @@ namespace MpCharacterEditor
             Application.SetCompatibleTextRenderingDefault(false);
             if (args.Length >= 2 && args[0] == "--picture")
                 return Picture(args[1], args.Length > 2 ? int.Parse(args[2]) : 0, args.Length > 3 ? int.Parse(args[3]) : 0);
+            // An unexpected error is written to %TEMP%\MpCharacterEditor.log and shown, instead of closing the program.
+            string log = Path.Combine(Path.GetTempPath(), "MpCharacterEditor.log");
+            Application.ThreadException += delegate(object sender, System.Threading.ThreadExceptionEventArgs e)
+            {
+                File.AppendAllText(log, DateTime.Now.ToString("HH:mm:ss.fff") + "\r\n" + e.Exception + "\r\n\r\n");
+                MessageBox.Show("Something went wrong (details in " + log + "):\n\n" + e.Exception.Message, "Saints Reborn - Save Editor", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            };
             MainForm main = new MainForm();
+            if (args.Length == 2 && args[0] == "--ui-check")
+            {
+                // Testing: load every save, click every car, write a report, and close.
+                main.Quiet = true;
+                main.Shown += delegate { File.WriteAllText(args[1], main.UiCheck()); main.Close(); };
+            }
             if (args.Length == 3 && args[0] == "--tab")
             {
                 // Testing: open on a given tab.
