@@ -672,9 +672,10 @@ namespace MpCharacterEditor
         WardrobeTables wardrobe;
         WardrobePanel storyWardrobe, onlineWardrobe;
         OwnedPanel storyOwned;
-        readonly ListView garageList = new ListView();
-        readonly ComboBox modelBox = new ComboBox();
-        readonly Label garageNote = new Label();
+        readonly ListView garageList = new ListView(), optionList = new ListView();
+        readonly ComboBox modelBox = new ComboBox(), partBox = new ComboBox(), paletteBox = new ComboBox(), colourBox = new ComboBox();
+        readonly Label garageNote = new Label(), optionTitle = new Label();
+        readonly Button stockButton = new Button();
         readonly TabControl wardrobeTabs = new TabControl();
 
         // Story save.
@@ -1132,7 +1133,16 @@ namespace MpCharacterEditor
             FlowLayoutPanel top = Row();
             garageNote.AutoSize = true; garageNote.Margin = new Padding(6, 7, 12, 0);
             top.Controls.Add(garageNote);
-            Button another = new Button(), remove = new Button();
+            Button another = new Button(), remove = new Button(), repair = new Button();
+            repair.Text = "Repair"; repair.AutoSize = true;
+            repair.Click += delegate
+            {
+                if (story == null || garageList.SelectedIndices.Count == 0) return;
+                GarageVehicle v = story.Vehicles[garageList.SelectedIndices[0]];
+                VehicleInfo info = game.Vehicle(v.Hash);
+                v.Repair(info != null ? info.MaxHitpoints : 50000); StoryChanged(); ShowGarage();
+            };
+            top.Controls.Add(repair);
             another.Text = "Another like it"; another.AutoSize = true;
             another.Click += delegate { if (story != null && garageList.SelectedIndices.Count > 0) { story.DuplicateVehicle(garageList.SelectedIndices[0]); StoryChanged(); ShowGarage(); } };
             remove.Text = "Remove"; remove.AutoSize = true;
@@ -1147,7 +1157,7 @@ namespace MpCharacterEditor
                 StoryChanged(); ShowGarage();
             };
             top.Controls.Add(modelBox);
-            SetUpList(garageList, false, "Car", 90, "Vehicle", 220, "Kind", 180, "Model name", 200);
+            SetUpList(garageList, false, "Car", 60, "Vehicle", 180, "Condition", 150, "Kind", 160, "Model name", 180);
             garageList.MultiSelect = false;
             garageList.SelectedIndexChanged += delegate
             {
@@ -1156,12 +1166,123 @@ namespace MpCharacterEditor
                 modelBox.SelectedItem = game.Vehicle(story.Vehicles[garageList.SelectedIndices[0]].Hash);
                 filling = false;
             };
-            Panel p = Fill(garageList, top);
-            Label hint = new Label();
-            hint.Dock = DockStyle.Bottom; hint.AutoSize = false; hint.Height = 24; hint.Padding = new Padding(8, 4, 0, 0); hint.ForeColor = SystemColors.GrayText;
-            hint.Text = "Another keeps the paint and parts; a new model keeps them too, and the game may reset ones that don't fit.";
-            p.Controls.Add(hint);
+            garageList.Dock = DockStyle.Top; garageList.Height = 150;
+            garageList.SelectedIndexChanged += delegate { ShowOptions(); };
+
+            // Paint and parts of the selected car: a row per slot of the model's own table.
+            FlowLayoutPanel pick = Row();
+            optionTitle.AutoSize = true; optionTitle.Margin = new Padding(6, 7, 12, 0); optionTitle.Font = new Font(Font, FontStyle.Bold);
+            pick.Controls.Add(optionTitle);
+            partBox.DropDownStyle = ComboBoxStyle.DropDownList; partBox.Width = 200;
+            partBox.SelectedIndexChanged += delegate { if (!filling) OptionPicked(); };
+            paletteBox.DropDownStyle = ComboBoxStyle.DropDownList; paletteBox.Width = 160;
+            paletteBox.SelectedIndexChanged += delegate { if (!filling) { FillColours(0); OptionPicked(); } };
+            colourBox.DropDownStyle = ComboBoxStyle.DropDownList; colourBox.Width = 200;
+            colourBox.SelectedIndexChanged += delegate { if (!filling) OptionPicked(); };
+            stockButton.Text = "Stock"; stockButton.AutoSize = true;
+            stockButton.Click += delegate
+            {
+                GarageVehicle v = SelectedCar(); CustomSlot s = SelectedSlot();
+                if (v == null || s == null) return;
+                v.ClearCustom(s.Id); StoryChanged(); ShowOptions();
+            };
+            pick.Controls.Add(partBox); pick.Controls.Add(paletteBox); pick.Controls.Add(colourBox); pick.Controls.Add(stockButton);
+            SetUpList(optionList, false, "Slot", 180, "Choice", 420);
+            optionList.MultiSelect = false;
+            optionList.SelectedIndexChanged += delegate { ShowPicker(); };
+            Panel lower = Fill(optionList, pick);
+
+            Panel p = new Panel(); p.Dock = DockStyle.Fill;
+            p.Controls.Add(lower); p.Controls.Add(garageList); p.Controls.Add(top);
             return p;
+        }
+
+        GarageVehicle SelectedCar() { return story != null && garageList.SelectedIndices.Count > 0 ? story.Vehicles[garageList.SelectedIndices[0]] : null; }
+        CustomSlot SelectedSlot() { return optionList.SelectedIndices.Count > 0 ? (CustomSlot)optionList.SelectedItems[0].Tag : null; }
+
+        void ShowOptions()
+        {
+            int keep = optionList.SelectedIndices.Count > 0 ? optionList.SelectedIndices[0] : -1;
+            optionList.BeginUpdate(); optionList.Items.Clear();
+            GarageVehicle v = SelectedCar();
+            VehicleCustomTables custom = game == null ? null : game.VehicleCustom;
+            VehicleInfo info = v == null || game == null ? null : game.Vehicle(v.Hash);
+            if (v != null && custom != null && info != null)
+            {
+                List<CustomSlot> slots = custom.Slots(info.Name);
+                foreach (CustomSlot s in slots)
+                {
+                    CustomEntry e = v.Entry(s.Id);
+                    string choice = "Stock";
+                    if (e != null)
+                    {
+                        choice = e.Component < s.Components.Count ? s.Components[e.Component].Name : "part " + e.Component;
+                        if (e.Colors.Count > 0) choice = custom.ColorName(e.Colors[0]);
+                    }
+                    ListViewItem row = new ListViewItem(new string[] { s.Name, choice }); row.Tag = s;
+                    optionList.Items.Add(row);
+                }
+                optionTitle.Text = slots.Count > 0 ? info.Title + ": pick a slot" : "The shops don't take a " + info.Title + ".";
+            }
+            else optionTitle.Text = v == null ? "Click a car for its paint and parts." : "The paint and parts tables were not found (misc2.vpp_xbox2).";
+            if (keep >= 0 && keep < optionList.Items.Count) optionList.Items[keep].Selected = true;
+            optionList.EndUpdate();
+            ShowPicker();
+        }
+
+        void ShowPicker()
+        {
+            GarageVehicle v = SelectedCar(); CustomSlot s = SelectedSlot();
+            filling = true;
+            partBox.Items.Clear(); paletteBox.Items.Clear(); colourBox.Items.Clear();
+            bool colour = s != null && s.IsColor;
+            partBox.Visible = s != null && !colour; paletteBox.Visible = colour; colourBox.Visible = colour; stockButton.Visible = s != null;
+            if (v != null && s != null)
+            {
+                CustomEntry e = v.Entry(s.Id);
+                if (colour)
+                {
+                    foreach (CustomPalette p in game.VehicleCustom.Palettes) paletteBox.Items.Add(p);
+                    if (e != null && e.Colors.Count > 0 && e.Colors[0].Palette < paletteBox.Items.Count)
+                    {
+                        paletteBox.SelectedIndex = e.Colors[0].Palette;
+                        FillColours(e.Colors[0].Color);
+                    }
+                }
+                else
+                {
+                    foreach (CustomComponent c in s.Components) partBox.Items.Add(c);
+                    if (e != null && e.Component < partBox.Items.Count) partBox.SelectedIndex = e.Component;
+                }
+                optionTitle.Text = s.Name;
+            }
+            filling = false;
+        }
+        void FillColours(int select)
+        {
+            bool was = filling; filling = true;
+            colourBox.Items.Clear();
+            CustomPalette p = paletteBox.SelectedItem as CustomPalette;
+            if (p != null) { foreach (string c in p.Colors) colourBox.Items.Add(c); if (select < colourBox.Items.Count) colourBox.SelectedIndex = select; }
+            filling = was;
+        }
+        void OptionPicked()
+        {
+            GarageVehicle v = SelectedCar(); CustomSlot s = SelectedSlot();
+            if (v == null || s == null) return;
+            if (s.IsColor)
+            {
+                if (paletteBox.SelectedIndex < 0 || colourBox.SelectedIndex < 0) return;
+                List<CustomColor> colors = new List<CustomColor>();
+                for (int k = 0; k < Math.Max(1, s.Components[0].ColorSlots.Count); k++) colors.Add(new CustomColor(paletteBox.SelectedIndex, colourBox.SelectedIndex));
+                v.SetCustom(s.Id, 0, colors);
+            }
+            else
+            {
+                if (partBox.SelectedIndex < 0) return;
+                v.SetCustom(s.Id, partBox.SelectedIndex, new List<CustomColor>());
+            }
+            StoryChanged(); ShowOptions();
         }
 
         void ShowGarage()
@@ -1175,12 +1296,15 @@ namespace MpCharacterEditor
             foreach (GarageVehicle v in story.Vehicles)
             {
                 VehicleInfo info = game == null ? null : game.Vehicle(v.Hash);
+                uint max = info != null ? info.MaxHitpoints : 50000;
+                string condition = !v.Damaged(max) ? "Mint" : (100 * v.Hitpoints / max) + "%" + (v.RepairBill > 0 ? ", $" + v.RepairBill.ToString("0") + " to fix" : "");
                 garageList.Items.Add(new ListViewItem(new string[] { "#" + v.Id, info != null ? info.Title : "Unknown " + v.Hash.ToString("X8"),
-                    info != null ? info.Category : "", info != null ? info.Name : "" }));
+                    condition, info != null ? info.Category : "", info != null ? info.Name : "" }));
             }
             if (selected >= 0 && selected < garageList.Items.Count) garageList.Items[selected].Selected = true;
             garageList.EndUpdate();
             garageNote.Text = story.Vehicles.Count + " in the garage";
+            ShowOptions();
         }
 
         void StoryChanged()
@@ -1641,6 +1765,28 @@ namespace MpCharacterEditor
                     for (int k = 0; k < s.Stash.Count; k++) if (name == "all" || s.Stash[k].Hash == GameData.Hash(name)) s.SetStash(k, value == "1");
                 }
                 else if (key.StartsWith("wear:")) Dress(s.Outfit, key, value, args[1]);
+                else if (key.StartsWith("custom:"))
+                {
+                    int at = -1;
+                    for (int k = 0; k < s.Vehicles.Count; k++) if (s.Vehicles[k].Id.ToString() == key.Substring(7)) at = k;
+                    string[] p = value.Split('/');
+                    if (at < 0 || p.Length < 2) continue;
+                    int slot = int.Parse(p[0]);
+                    if (p[1] == "none") s.Vehicles[at].ClearCustom(slot);
+                    else
+                    {
+                        List<CustomColor> colors = new List<CustomColor>();
+                        if (p.Length == 4)
+                        {
+                            GameData gd = GameNear(args[1]);
+                            VehicleInfo info = gd.Vehicle(s.Vehicles[at].Hash);
+                            int n = 1;
+                            foreach (CustomSlot cs in gd.VehicleCustom.Slots(info == null ? null : info.Name)) if (cs.Id == slot && cs.Components.Count > 0) n = Math.Max(1, cs.Components[0].ColorSlots.Count);
+                            for (int k = 0; k < n; k++) colors.Add(new CustomColor(int.Parse(p[2]), int.Parse(p[3])));
+                        }
+                        s.Vehicles[at].SetCustom(slot, int.Parse(p[1]), colors);
+                    }
+                }
                 else if (key.StartsWith("vehicle:"))
                 {
                     string which = key.Substring(8);
@@ -1649,6 +1795,7 @@ namespace MpCharacterEditor
                     if (at < 0) continue;
                     if (which == "add") s.DuplicateVehicle(at);
                     else if (value == "none") s.Vehicles.RemoveAt(at);
+                    else if (value == "repair") { VehicleInfo v = GameNear(args[1]).Vehicle(s.Vehicles[at].Hash); s.Vehicles[at].Repair(v != null ? v.MaxHitpoints : 50000); }
                     else { VehicleInfo v = GameNear(args[1]).VehicleNamed(value); if (v != null) s.Vehicles[at].Hash = v.Hash; }
                 }
                 else if (key.StartsWith("own:"))

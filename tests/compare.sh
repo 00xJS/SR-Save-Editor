@@ -41,6 +41,9 @@ run_both own:333/80=1 own:224/193=0 wear:224=193/198
 # Garage: another of the last car, a new model for one, one gone; then again once the garage is in our block.
 run_both vehicle:add=5 vehicle:4=car_2dr_sports04 vehicle:2=none
 run_both vehicle:1=none cash=4242
+run_both vehicle:4=repair vehicle:3=repair
+# Paint and parts: body colour, rims, a slot back to stock, and a multi-colour body slot.
+run_both custom:2=0/0/0/15 custom:2=11/2 custom:2=4/none custom:5=2/0/4/7 custom:1=7/1
 
 # The online character, when one is next to the save.
 MP="$(dirname "$SAVE")/3_MPStorage"

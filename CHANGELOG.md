@@ -9,8 +9,9 @@ Mac and Windows.
   online character wears; the clothing owned in the story, too. Hair, facial hair, eyes, hats, eyewear, shirts, coats,
   necklaces, medallions, pendants, bracelets, watches, rings, underwear, pants,
   socks and shoes. Belts, piercings and tattoos are not in yet.
-- The garage: see the cars by name, add another like one, remove one, or
-  change the model.
+- The garage: see the cars by name and condition, repair one, add another
+  like one, remove one, change the model, and change the paint and parts
+  from the game's own lists.
 - Restore backup for story saves (and for the online character on Mac).
 - `tests/compare.sh` checks that both versions write identical saves.
 

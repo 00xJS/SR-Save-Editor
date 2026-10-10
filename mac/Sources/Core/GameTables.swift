@@ -4,7 +4,12 @@ import Foundation
 
 struct WeaponInfo { let name, title, weaponClass: String; let magazine, maxRounds: Int; let slot: Int }
 struct CheatInfo: Identifiable { let id: Int; let name, number, category: String }
-struct VehicleInfo: Identifiable { let name, title, category: String; var id: String { name }; var hash: UInt32 { GameTables.hash(name) } }
+struct VehicleInfo: Identifiable {
+    let name, title, category: String
+    /// Ten times the table's Max_Hitpoints (5000 when it is not given): the saves count in tenths.
+    let maxHitpoints: UInt32
+    var id: String { name }; var hash: UInt32 { GameTables.hash(name) }
+}
 
 final class GameTables {
     /// Wheel slots, clockwise from the top.
@@ -24,6 +29,8 @@ final class GameTables {
     let pack: Packfile
     let packfilesFolder: URL
     private(set) lazy var icons: GameIcons? = GameIcons(tables: self, packfiles: packfilesFolder)
+    /// Paint and parts for the garage (misc2.vpp_xbox2), read the first time they are needed.
+    private(set) lazy var vehicleCustom: VehicleCustomTables? = VehicleCustomTables(tables: self)
 
     static func find(near url: URL?) -> URL? {
         var tries: [URL] = []
@@ -67,7 +74,8 @@ final class GameTables {
         }
         for block in blocks("vehicles.xtbl", "Vehicle") {
             guard let n = tag(block, "Name") else { continue }
-            let v = VehicleInfo(name: n, title: tag(block, "Display_Name") ?? n, category: tag(block, "Category") ?? "")
+            let v = VehicleInfo(name: n, title: tag(block, "Display_Name") ?? n, category: tag(block, "Category") ?? "",
+                                maxHitpoints: UInt32((Int(tag(block, "Max_Hitpoints") ?? "") ?? 5000) * 10))
             vehicles.append(v); vehicleByHash[v.hash] = v
         }
         vehicles.sort { $0.title < $1.title }

@@ -126,6 +126,7 @@ namespace MpCharacterEditor
     class VehicleInfo
     {
         public string Name, Title, Category; public uint Hash;
+        public uint MaxHitpoints;   // ten times the table's Max_Hitpoints (5000 when not given): the saves count in tenths
         public override string ToString() { return Title + "  (" + Category + ")"; }
     }
     class CheatInfo { public string Name, Number, Category; }
@@ -136,6 +137,12 @@ namespace MpCharacterEditor
         // Wheel slots, clockwise from the top.
         public static readonly string[] SlotNames = { "Unarmed", "Melee", "Pistol", "SMG", "Shotgun", "Rifle", "Launcher", "Thrown" };
         public readonly Packfile Pack;
+        readonly string dist;
+        Packfile pack2;
+        // misc2.vpp_xbox2: the paint and parts tables for the garage, read when first needed.
+        public Packfile Pack2 { get { return pack2 ?? (pack2 = new Packfile(Path.Combine(dist, @"game\packfiles\misc2.vpp_xbox2"))); } }
+        VehicleCustomTables vehicleCustom;
+        public VehicleCustomTables VehicleCustom { get { return vehicleCustom ?? (vehicleCustom = VehicleCustomTables.Open(this)); } }
         public readonly Dictionary<string, string> Strings = new Dictionary<string, string>();
         public readonly Dictionary<string, WeaponInfo> Weapons = new Dictionary<string, WeaponInfo>();   // by lower-case name
         public readonly List<string> Offered = new List<string>();   // sold in stores or kept at the crib
@@ -163,6 +170,7 @@ namespace MpCharacterEditor
 
         public GameData(string distFolder)
         {
+            dist = distFolder;
             Pack = new Packfile(Path.Combine(distFolder, @"game\packfiles\misc.vpp_xbox2"));
 
             string text = Encoding.Unicode.GetString(Pack.Read("US_Strings.txt"));
@@ -206,6 +214,7 @@ namespace MpCharacterEditor
                 if (n == null) continue;
                 VehicleInfo v = new VehicleInfo();
                 v.Name = n; v.Title = Tag(block, "Display_Name") ?? n; v.Category = Tag(block, "Category") ?? ""; v.Hash = Hash(n);
+                int hp = Number(Tag(block, "Max_Hitpoints")); v.MaxHitpoints = (uint)(hp > 0 ? hp : 5000) * 10;
                 Vehicles.Add(v); vehicleByHash[v.Hash] = v;
             }
             Vehicles.Sort(delegate(VehicleInfo a, VehicleInfo b) { return string.CompareOrdinal(a.Title, b.Title); });
@@ -685,6 +694,88 @@ namespace MpCharacterEditor
     class Neighbourhood { public string Name; public int OwnerAt; public uint Owner; }
     class Homie { public string Name; public int FlagAt; public bool Unlocked; }
     class StashWeapon { public uint Hash; public int FlagAt; public bool Unlocked; }
+    // The paint and parts of a car, read from the player's own game files (vehicle_cust.xtbl
+    // and vehicle_cust_colors.xtbl in misc2.vpp_xbox2).
+    //
+    // In a car record, from 0x10: a flags byte, three constant bytes, 0x0B, the length of the
+    // variant section, the variant section (left as it is), then the number of entries and the
+    // entries. An entry is slot, component, number of colours, then (palette, colour) pairs,
+    // one per colour sub-slot of the component. Slots and components are indexes into the
+    // car's own table; palettes are indexes into the colour table, colours into the palette.
+    // The word at 0x154 is one less than the number of bytes from 0x10.
+    struct CustomColor { public int Palette, Color; public CustomColor(int p, int c) { Palette = p; Color = c; } }
+    class CustomEntry { public int Slot, Component; public List<CustomColor> Colors = new List<CustomColor>(); }
+    class CustomComponent { public string Name; public List<string> ColorSlots = new List<string>(); public override string ToString() { return Name; } }
+    class CustomSlot
+    {
+        public int Id; public string Name; public List<CustomComponent> Components = new List<CustomComponent>();
+        // A colour slot has one component (Paint) with colour sub-slots; a part slot has parts to pick.
+        public bool IsColor { get { return Components.Count == 1 && Components[0].ColorSlots.Count > 0; } }
+    }
+    class CustomPalette { public int Id; public string Name; public List<string> Colors = new List<string>(); public override string ToString() { return Name; } }
+
+    class VehicleCustomTables
+    {
+        public readonly List<CustomPalette> Palettes = new List<CustomPalette>();
+        readonly Dictionary<string, List<CustomSlot>> slotsByVehicle = new Dictionary<string, List<CustomSlot>>();
+
+        // Null when the tables are not there.
+        public static VehicleCustomTables Open(GameData game)
+        {
+            try { VehicleCustomTables t = new VehicleCustomTables(game); return t.Palettes.Count > 0 && t.slotsByVehicle.Count > 0 ? t : null; }
+            catch (Exception) { return null; }
+        }
+        VehicleCustomTables(GameData game)
+        {
+            XmlDocument doc = new XmlDocument();
+            using (MemoryStream ms = new MemoryStream(game.Pack2.Read("vehicle_cust_colors.xtbl"))) doc.Load(ms);
+            foreach (XmlNode p in doc.SelectNodes("/root/Table/Custom_vehicle_palettes"))
+            {
+                CustomPalette pal = new CustomPalette();
+                pal.Id = Palettes.Count; pal.Name = Str(p, "Name");
+                foreach (XmlNode c in p.SelectNodes("Colors/Color")) pal.Colors.Add(Str(c, "Name"));
+                Palettes.Add(pal);
+            }
+            doc = new XmlDocument();
+            using (MemoryStream ms = new MemoryStream(game.Pack2.Read("vehicle_cust.xtbl"))) doc.Load(ms);
+            foreach (XmlNode v in doc.SelectNodes("/root/Table/Custom_vehicle_properties"))
+            {
+                List<CustomSlot> slots = new List<CustomSlot>();
+                foreach (XmlNode s in v.SelectNodes("Slots/Slot"))
+                {
+                    CustomSlot slot = new CustomSlot();
+                    slot.Id = slots.Count; slot.Name = Str(s, "Name");
+                    foreach (XmlNode c in s.SelectNodes("Components/Component"))
+                    {
+                        CustomComponent comp = new CustomComponent();
+                        comp.Name = Str(c, "Name");
+                        foreach (XmlNode cs in c.SelectNodes("Color_slots/Color_slot")) comp.ColorSlots.Add(Str(cs, "Name"));
+                        slot.Components.Add(comp);
+                    }
+                    slots.Add(slot);
+                }
+                slotsByVehicle[Str(v, "Name").ToLowerInvariant()] = slots;
+            }
+        }
+        static string Str(XmlNode n, string child)
+        {
+            XmlNode c = n[child];
+            return c == null ? "" : c.InnerText.Trim();
+        }
+        // The slots a model can be customised in; empty for one the shops don't take.
+        public List<CustomSlot> Slots(string vehicleName)
+        {
+            List<CustomSlot> s;
+            return vehicleName != null && slotsByVehicle.TryGetValue(vehicleName.ToLowerInvariant(), out s) ? s : new List<CustomSlot>();
+        }
+        public string ColorName(CustomColor c)
+        {
+            if (c.Palette < 0 || c.Palette >= Palettes.Count) return "palette " + c.Palette + " colour " + c.Color;
+            CustomPalette p = Palettes[c.Palette];
+            return (c.Color >= 0 && c.Color < p.Colors.Count ? p.Colors[c.Color] : "colour " + c.Color) + " (" + p.Name + ")";
+        }
+    }
+
     // A car in the garage: 1160 bytes the game wrote. The first words are 0, the car's number,
     // the name hash of the model, and a garage number; the rest is paint, parts and condition.
     class GarageVehicle
@@ -695,6 +786,97 @@ namespace MpCharacterEditor
         public uint Id { get { return Be.U32(Raw, 4); } set { Be.Put(Raw, 4, value); } }
         public uint Hash { get { return Be.U32(Raw, 8); } set { Be.Put(Raw, 8, value); } }
         public GarageVehicle Copy() { return new GarageVehicle((byte[])Raw.Clone()); }
+        // Condition: the repair bill (a float), the hit points, then a count of part values and the
+        // values: body panels up to a fifth of the hit points, tyres 450, glass 1, and larger ones
+        // for the engine and doors. Damage flags follow at 0x268, and the dents at 0x2A4 (a count).
+        const int BillAt = 0x158, HitpointsAt = 0x15C, PartCountAt = 0x160, PartsAt = 0x164, FlagsAt = 0x268, FlagsEnd = 0x288, DentsAt = 0x2A4;
+        public float RepairBill { get { byte[] b = { Raw[BillAt + 3], Raw[BillAt + 2], Raw[BillAt + 1], Raw[BillAt] }; return BitConverter.ToSingle(b, 0); } }
+        public uint Hitpoints { get { return Be.U32(Raw, HitpointsAt); } }
+        public uint Dents { get { return Be.U32(Raw, DentsAt); } }
+        // ---- Paint and parts ----
+        const int CustomAt = 0x10, CustomLengthAt = 0x154, CustomEnd = 0x150;
+        byte[] CustomBytes()
+        {
+            int n = Math.Min((int)Be.U32(Raw, CustomLengthAt) + 1, CustomEnd - CustomAt);
+            byte[] b = new byte[Math.Max(0, n)];
+            Buffer.BlockCopy(Raw, CustomAt, b, 0, b.Length);
+            return b;
+        }
+        // The paint and parts chosen, as the game wrote them.
+        public List<CustomEntry> GetCustomization()
+        {
+            List<CustomEntry> list = new List<CustomEntry>();
+            byte[] b = CustomBytes();
+            if (b.Length < 7 || b.Length < 7 + b[5]) return list;
+            int i = 6 + b[5], count = b[i++];
+            for (int k = 0; k < count && i + 3 <= b.Length; k++)
+            {
+                CustomEntry e = new CustomEntry();
+                e.Slot = b[i]; e.Component = b[i + 1]; int n = b[i + 2]; i += 3;
+                for (int c = 0; c < n && i + 2 <= b.Length; c++) { e.Colors.Add(new CustomColor(b[i], b[i + 1])); i += 2; }
+                list.Add(e);
+            }
+            return list;
+        }
+        public void SetCustomization(List<CustomEntry> list)
+        {
+            byte[] old = CustomBytes();
+            List<byte> b = new List<byte>();
+            if (old.Length >= 6) for (int k = 0; k < 6 + old[5] && k < old.Length; k++) b.Add(old[k]);
+            else b.AddRange(new byte[] { 0, 0x0A, 0x55, 0xB0, 0x0B, 0 });
+            b.Add((byte)Math.Min(list.Count, 255));
+            foreach (CustomEntry e in list)
+            {
+                b.Add((byte)e.Slot); b.Add((byte)e.Component); b.Add((byte)e.Colors.Count);
+                foreach (CustomColor c in e.Colors) { b.Add((byte)c.Palette); b.Add((byte)c.Color); }
+            }
+            if (CustomAt + b.Count > CustomEnd) return;
+            Array.Clear(Raw, CustomAt, CustomEnd - CustomAt);
+            b.CopyTo(Raw, CustomAt);
+            Be.Put(Raw, CustomLengthAt, (uint)(b.Count - 1));
+        }
+        public CustomEntry Entry(int slot)
+        {
+            foreach (CustomEntry e in GetCustomization()) if (e.Slot == slot) return e;
+            return null;
+        }
+        // Puts a part in a slot (no colours), or a colour in a colour slot (one pair per sub-slot), keeping the game's order.
+        public void SetCustom(int slot, int component, List<CustomColor> colors)
+        {
+            List<CustomEntry> list = GetCustomization();
+            CustomEntry e = new CustomEntry(); e.Slot = slot; e.Component = component; e.Colors = colors;
+            int at = list.FindIndex(delegate(CustomEntry x) { return x.Slot == slot; });
+            if (at >= 0) list[at] = e; else list.Add(e);
+            SetCustomization(list);
+        }
+        // Back to the car's stock choice for that slot.
+        public void ClearCustom(int slot)
+        {
+            List<CustomEntry> list = GetCustomization();
+            list.RemoveAll(delegate(CustomEntry x) { return x.Slot == slot; });
+            SetCustomization(list);
+        }
+
+        public bool Damaged(uint maxHitpoints) { return Hitpoints < maxHitpoints || RepairBill > 0 || Dents > 0; }
+        // As the mechanic leaves it: full hit points, no bill, no dents, every part back up.
+        // The save does not say what kind each part is, so a damaged part is raised to the
+        // largest value its kind could have; the game holds each to its own maximum.
+        // A part at 1 or 450 is left alone: those are whole glass and whole tyres (or, rarely,
+        // a panel knocked down to 1).
+        public void Repair(uint max)
+        {
+            Be.Put(Raw, BillAt, 0); Be.Put(Raw, HitpointsAt, max); Be.Put(Raw, DentsAt, 0);
+            uint part = max / 5;
+            int n = (int)Math.Min(Be.U32(Raw, PartCountAt), 64u);
+            for (int k = 0; k < n; k++)
+            {
+                int o = PartsAt + 4 * k; uint v = Be.U32(Raw, o);
+                if (v == 1 || v == 450) continue;
+                else if (v <= part) Be.Put(Raw, o, part);                        // a body panel, or a part knocked to 0
+                else if (v <= 50000) Be.Put(Raw, o, 50000); else Be.Put(Raw, o, 100000);
+            }
+            for (int o = FlagsAt; o < FlagsEnd; o += 4) Be.Put(Raw, o, 0);
+        }
     }
     class CarriedWeapon
     {

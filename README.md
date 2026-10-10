@@ -72,7 +72,17 @@ Both are big-endian.
 | `0x064C` | outfit: count, then 16-byte records in place (item id, variant id, slot, wear option); room for 128 |
 | `0x0E50` | clothing owned: count, then 12-byte records in place (item id, variant id, 0); room for 2048 |
 | `0x6E88` | homies: count, pointer to 12-byte records (name, 0, unlocked) |
-| `0x6E98` | garage: count, pointer to 1160-byte records (0, car number, model name hash, garage, then paint, parts and condition); `0x6EA0` is the next car number |
+| `0x6E98` | garage: count, pointer to 1160-byte records; `0x6EA0` is the next car number |
+
+A car record: `0x04` car number, `0x08` model name hash, `0x10` the paint and
+parts: a flags byte, `0A 55 B0 0B`, the length of a variant section and that
+section, then the number of entries and the entries (slot, component, number
+of colours, then palette and colour pairs), with the word at `0x154` one less
+than the number of bytes from `0x10`; `0x158` repair bill (float), `0x15C` hit points
+(ten times the table's `Max_Hitpoints`, 5000 when not given), `0x160` a count
+and then one value per part (panels up to a fifth of the hit points, tyres 450,
+glass 1, larger ones for the engine and doors), `0x268` damage flags, `0x2A4`
+the number of dents, then 24-byte dents to the end.
 | `0x6E90` | neighbourhoods: count, pointer to 12-byte records (name, owner, flags) |
 | `0x6F8C` | crib weapon cache: count, pointer to 8-byte records (name hash, flags) |
 
@@ -96,11 +106,23 @@ not known yet.
 
 ### The garage
 
-The cars are listed by name. **Another like it** adds a copy with the next
-car number; **Remove** takes one out; the model can be changed. A copy or a
-changed model keeps the paint and parts of the car it came from, and the game
-may reset ones that don't fit the new model. The editor doesn't yet read the
-paint and parts themselves.
+The cars are listed by name with their condition. **Repair** does what the
+mechanic does: full hit points, no repair bill, no dents, and every part back
+up. The save does not say what kind each part is (panel, tyre, glass), so a
+damaged part is raised to the most its kind could hold and the game holds it
+to the part's own maximum; a part the game knocked all the way down to 1 is
+left as it is. **Another like it** adds a copy with the next car number;
+**Remove** takes one out; the model can be changed. A copy or a changed model
+keeps the paint and parts of the car it came from, and the game may reset ones
+that don't fit the new model.
+
+Click a car for its **paint and parts**: one row per slot of the model's own
+table in the game files, with the same parts and the same palettes and colour
+names the mechanic offers (body, trim, rim and interior colour, window tint,
+bumpers, hoods, roofs, rims, spoilers, decals, nitrous, hydraulics and so on).
+**Stock** takes a slot back to how the car came. A body-colour slot that
+covers several areas (Paint, Paint 1, Paint 2) gets the same colour in each;
+the game writes those as separate slots when they differ.
 
 ## Fair play
 
