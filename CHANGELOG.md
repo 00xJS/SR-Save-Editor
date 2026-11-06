@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+Windows.
+
+- Story save: **Start at**, where the game puts you when the save loads (a
+  crib, the church, or a district save point), from the game's own list.
+- Garage: the random looks of a model (variant, flashers, light bars, hoods
+  and so on) and the police unit number.
+- Fixed: an error when opening the wardrobe for the first time.
+
 ## 0.3.0
 
 Mac and Windows.

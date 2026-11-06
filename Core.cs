@@ -4,6 +4,7 @@
 // Story save: big-endian. A fixed header (0x7000 bytes) holds counts and
 // pointers; the lists they point to follow it. Pointers are offsets from the
 // start of the file.
+//   0x0088  where the player starts: name hash of a save spot (see SavePoint)
 //   0x0090  respect            0x00A0  cash in cents
 //   0x0144  carried weapons: count, pointer to 16-byte records (name, count, loaded, spare)
 //   0x0240  carried food: count, pointer to names
@@ -20,6 +21,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml;
 
 namespace MpCharacterEditor
@@ -50,6 +52,7 @@ namespace MpCharacterEditor
         readonly List<Entry> entries = new List<Entry>();
 
         static int Up(long x) { return (int)((x + Align - 1) & ~(long)(Align - 1)); }
+        public IEnumerable<string> Names { get { foreach (Entry e in entries) yield return e.Name; } }
 
         public Packfile(string path)
         {
@@ -145,6 +148,14 @@ namespace MpCharacterEditor
         public VehicleCustomTables VehicleCustom { get { return vehicleCustom ?? (vehicleCustom = VehicleCustomTables.Open(this)); } }
         VariantTables variants;
         public VariantTables Variants { get { return variants ?? (variants = new VariantTables(this)); } }
+        List<SavePoint> savePoints;
+        // Every save spot in the city, read from the map files when first needed.
+        public List<SavePoint> SavePoints { get { return savePoints ?? (savePoints = SavePoint.ReadAll(this)); } }
+        public SavePoint SavePointOf(uint hash)
+        {
+            foreach (SavePoint p in SavePoints) if (p.Hash == hash) return p;
+            return null;
+        }
         public readonly Dictionary<string, string> Strings = new Dictionary<string, string>();
         public readonly Dictionary<string, WeaponInfo> Weapons = new Dictionary<string, WeaponInfo>();   // by lower-case name
         public readonly List<string> Offered = new List<string>();   // sold in stores or kept at the crib
@@ -979,6 +990,65 @@ namespace MpCharacterEditor
         }
     }
 
+    // A save spot: a trigger of the kind "save spot" in a district's map file (<district>.cts in
+    // misc.vpp_xbox2). The story save keeps the name hash of the one the player last saved at, and
+    // the game starts the player there: a crib, the church, or a save point in a district.
+    class SavePoint
+    {
+        public string Name, Title; public uint Hash; public int Order;
+        public override string ToString() { return Title; }
+
+        static readonly Dictionary<string, string> Districts = new Dictionary<string, string> {
+            { "saintsrow", "Saint's Row" }, { "barrio", "Barrio" }, { "docks", "Docks" }, { "downtown", "Downtown" },
+            { "factory", "Factories" }, { "projects", "Projects" }, { "racetrack", "Racetrack" }, { "redlight", "Red Light" },
+            { "truckyard", "Truck Yard" }, { "vksuburb", "Suburbs (Vice Kings)" }, { "wrsuburb", "Suburbs (Westside Rollerz)" },
+        };
+
+        public static List<SavePoint> ReadAll(GameData game)
+        {
+            // The cribs by district, with their names: cribs.xtbl lists each crib's clothing navpoint,
+            // whose prefix is the district.
+            Dictionary<string, string> cribs = new Dictionary<string, string>();
+            foreach (string block in game.Blocks("cribs.xtbl", "Cribs"))
+            {
+                string clothing = GameData.Tag(block, "Clothing"), name = GameData.Tag(block, "Name"), shown = GameData.Tag(block, "DisplayName"), s;
+                if (clothing == null || clothing.IndexOf('_') < 0) continue;
+                cribs[clothing.Substring(0, clothing.IndexOf('_')).ToLowerInvariant()] = shown != null && game.Strings.TryGetValue(shown, out s) && s.Length > 0 ? s : name;
+            }
+            List<SavePoint> list = new List<SavePoint>();
+            HashSet<uint> seen = new HashSet<uint>();
+            Regex trigger = new Regex(@"\$Trigger:\s*""([^""]+)""\s*\$Trigger type:[^\n]*\s*\$Trigger action:\s*""save spot""");
+            foreach (string file in game.Pack.Names)
+            {
+                if (!file.EndsWith(".cts", StringComparison.OrdinalIgnoreCase)) continue;
+                string text;
+                try { text = Encoding.GetEncoding(28591).GetString(game.Pack.Read(file)); }
+                catch (Exception) { continue; }
+                foreach (Match m in trigger.Matches(text))
+                {
+                    string name = m.Groups[1].Value.ToLowerInvariant();
+                    SavePoint p = new SavePoint(); p.Name = name; p.Hash = GameData.Hash(name);
+                    if (!seen.Add(p.Hash)) continue;
+                    int cut = name.IndexOf('_');
+                    string district = cut < 0 ? name : name.Substring(0, cut), spot = cut < 0 ? "" : name.Substring(cut + 1).TrimStart('$'), where, crib;
+                    if (!Districts.TryGetValue(district, out where)) where = game.Title(district);
+                    if (spot.StartsWith("crib")) { p.Order = 0; p.Title = "Crib: " + (cribs.TryGetValue(district, out crib) ? crib : where); }
+                    else if (spot.StartsWith("church")) { p.Order = 1; p.Title = "Church (" + where + ")"; }
+                    else
+                    {
+                        p.Order = 2;
+                        string what = spot.StartsWith("t-") ? spot.Substring(2) : spot;
+                        if (what.EndsWith("-save")) what = what.Substring(0, what.Length - 5);
+                        p.Title = where + ": save point" + (what.Length > 0 && what != "save" ? " (" + what.Replace('-', ' ') + ")" : "");
+                    }
+                    list.Add(p);
+                }
+            }
+            list.Sort(delegate(SavePoint a, SavePoint b) { return a.Order != b.Order ? a.Order.CompareTo(b.Order) : string.CompareOrdinal(a.Title, b.Title); });
+            return list;
+        }
+    }
+
     class CarriedWeapon
     {
         public string Name; public uint Count = 1, Clip, Reserve;
@@ -989,6 +1059,8 @@ namespace MpCharacterEditor
     {
         public static readonly string[] Gangs = { "3rd Street Saints", "Los Carnales", "Vice Kings", "Westside Rollerz" };
         const int RespectAt = 0x90, RespectTotalAt = 0x94, RespectNeededAt = 0x98, CashAt = 0xA0;
+        // Where the player starts: the name hash of the save spot last saved at (see SavePoint).
+        const int StartAt = 0x88;
         // (count, pointer) pairs in the header.
         const int WeaponsAt = 0x144, FoodAt = 0x240, HomiesAt = 0x6E88, HoodsAt = 0x6E90, StashAt = 0x6F8C, EndPointerAt = 0x6FF8;
         // The garage: count and pointer to 1160-byte records; the next car number; and the list that
@@ -1138,6 +1210,7 @@ namespace MpCharacterEditor
             set { Be.Put(data, RespectAt, value); Be.Put(data, RespectTotalAt, value); }
         }
         public uint RespectNeeded { get { return U32(RespectNeededAt); } }
+        public uint StartPoint { get { return U32(StartAt); } set { Be.Put(data, StartAt, value); } }
 
         public void SetOwner(int index, uint gang)
         {

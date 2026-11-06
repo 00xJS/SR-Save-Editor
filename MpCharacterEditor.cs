@@ -705,6 +705,7 @@ namespace MpCharacterEditor
         readonly ComboBox storyBox = new ComboBox(), ownerBox = new ComboBox();
         readonly Button storySave = new Button(), storyReload = new Button(), storyFolder = new Button(), storyRestore = new Button();
         readonly NumericUpDown storyCash = new NumericUpDown(), respectBox = new NumericUpDown();
+        readonly ComboBox startBox = new ComboBox();
         readonly NumericUpDown loadedBox = new NumericUpDown(), spareBox = new NumericUpDown();
         readonly Label respectNote = new Label(), ammoTitle = new Label(), stashNote = new Label(), hoodNote = new Label();
         readonly Button fillAmmo = new Button();
@@ -956,7 +957,22 @@ namespace MpCharacterEditor
             respectRow.Controls.Add(respectBox);
             respectNote.AutoSize = true; respectNote.Margin = new Padding(8, 7, 0, 0);
             respectRow.Controls.Add(respectNote);
-            player.Controls.Add(cashRow); player.Controls.Add(respectRow);
+            // Where the player starts: the save spot the game last saved at.
+            FlowLayoutPanel startRow = Row();
+            startRow.Controls.Add(Caption("Start at"));
+            startBox.DropDownStyle = ComboBoxStyle.DropDownList; startBox.Width = 300;
+            startBox.SelectedIndexChanged += delegate
+            {
+                SavePoint p = startBox.SelectedItem as SavePoint;
+                if (filling || story == null || p == null) return;
+                story.StartPoint = p.Hash; StoryChanged();
+            };
+            startRow.Controls.Add(startBox);
+            Label startNote = new Label(); startNote.AutoSize = true; startNote.Margin = new Padding(8, 7, 0, 0);
+            startNote.Text = "Pick a crib or save point you have unlocked.";
+            startNote.ForeColor = SystemColors.GrayText;
+            startRow.Controls.Add(startNote);
+            player.Controls.Add(cashRow); player.Controls.Add(respectRow); player.Controls.Add(startRow);
 
             // Weapons
             FlowLayoutPanel ammo = Row();
@@ -1121,7 +1137,7 @@ namespace MpCharacterEditor
                 try
                 {
                     storyBox.SelectedIndex = i; LoadStory();
-                    sb.AppendLine("save " + storyBox.Items[i] + ": " + (story == null ? "not loaded" : story.Vehicles.Count + " cars"));
+                    sb.AppendLine("save " + storyBox.Items[i] + ": " + (story == null ? "not loaded" : story.Vehicles.Count + " cars, start at '" + startBox.Text + "' of " + startBox.Items.Count));
                     if (story == null) continue;
                     for (int k = 0; k < garageList.Items.Count; k++)
                     {
@@ -1181,6 +1197,15 @@ namespace MpCharacterEditor
             storyCash.Value = Math.Max(0, Math.Min(storyCash.Maximum, story.Cash));
             respectBox.Value = Math.Min(respectBox.Maximum, story.Respect);
             respectNote.Text = "Next bar at " + story.RespectNeeded + ".";
+            startBox.Items.Clear();
+            if (game != null) foreach (SavePoint p in game.SavePoints) startBox.Items.Add(p);
+            SavePoint start = game == null ? null : game.SavePointOf(story.StartPoint);
+            if (start == null)
+            {
+                start = new SavePoint(); start.Hash = story.StartPoint; start.Title = "Unknown spot (" + story.StartPoint.ToString("x8") + ")";
+                startBox.Items.Insert(0, start);
+            }
+            startBox.SelectedItem = start;
             stashList.Items.Clear();
             foreach (StashWeapon s in story.Stash)
             {
@@ -1896,6 +1921,8 @@ namespace MpCharacterEditor
             Tables tables = new Tables(game);
             sb.AppendLine("weapons " + game.Weapons.Count + ", offered " + game.Offered.Count + ", food " + game.Food.Count + ", cheats " + game.Cheats.Count);
             sb.AppendLine("items " + tables.Items.Count + ", sold in multiplayer " + tables.Store.Count);
+            sb.AppendLine("save spots " + game.SavePoints.Count);
+            foreach (SavePoint p in game.SavePoints) sb.AppendLine("  " + p.Hash.ToString("x8") + "  " + p.Title + "  [" + p.Name + "]");
             foreach (string player in Game.Players(dist))
             {
                 Character c = new Character(Game.CharacterFile(dist, player));
@@ -1921,6 +1948,7 @@ namespace MpCharacterEditor
                 string key = args[i].Substring(0, eq), value = args[i].Substring(eq + 1);
                 changed = true;
                 if (key == "cash") s.Cash = decimal.Parse(value);
+                else if (key == "start") s.StartPoint = GameData.Hash(value);   // start=<save spot name>, e.g. saintsrow_$crib_save000
                 else if (key == "food") s.Food = new List<string>(value.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries));
                 else if (key == "stash" || key.StartsWith("stash:"))
                 {
@@ -1994,6 +2022,8 @@ namespace MpCharacterEditor
                 sb.AppendLine("saved; previous file kept as " + Path.GetFileName(s.Save()));
             }
             sb.AppendLine("cash " + s.Cash.ToString("0.00") + ", respect " + s.Respect);
+            SavePoint startAt = GameNear(args[1]).SavePointOf(s.StartPoint);
+            sb.AppendLine("start " + s.StartPoint.ToString("x8") + (startAt != null ? " " + startAt.Name + " (" + startAt.Title + ")" : " unknown"));
             foreach (CarriedWeapon w in s.Weapons) sb.AppendLine("weapon " + w.Name + " " + w.Clip + "/" + w.Reserve);
             sb.AppendLine("food " + string.Join(",", s.Food.ToArray()));
             sb.AppendLine("outfit " + WardrobeTables.Describe(s.Outfit));

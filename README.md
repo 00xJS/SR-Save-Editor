@@ -65,6 +65,7 @@ Both are big-endian.
 
 | Story save | What |
 |---|---|
+| `0x0088` | where the player starts: the name hash of the save spot last saved at |
 | `0x0090` | respect |
 | `0x00A0` | cash in cents |
 | `0x0144` | carried weapons: count, pointer to 16-byte records (name, count, loaded, spare) |
@@ -103,6 +104,15 @@ between the shirts and the underwear and has not been seen in a save yet; if a
 coat put on with the editor is gone when the game loads, that is why. Belts,
 piercings, tattoos and skin are left as they are, because their numbers are
 not known yet.
+
+### Where the game starts
+
+**Start at** on the Player screen is the save spot the game puts you at when
+the save loads: one of the four cribs, the church, or a save point in a
+district. The list is read from the game's map files (every trigger of the
+kind "save spot" in a district's `.cts` file), and the save keeps the name hash
+of the one chosen. Pick one you have unlocked; cribs open up as the story goes
+on, and the editor does not know which ones you own yet.
 
 ### The garage
 
