@@ -5,3 +5,6 @@
 # Mac build output
 mac/build/
 .DS_Store
+
+# Real saves collected for testing (tests/collect-saves.sh): personal, keep local
+tests/saves/

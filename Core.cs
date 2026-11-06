@@ -4,6 +4,9 @@
 // Story save: big-endian. A fixed header (0x7000 bytes) holds counts and
 // pointers; the lists they point to follow it. Pointers are offsets from the
 // start of the file.
+//   0x0000  checksum: Crc32 of every byte from 0x0004 to the end of the file. The game's
+//           loader (0x822036E0) checks it and calls the save corrupt when it differs.
+//   0x0004  version, 23 (the loader and the save list want 23)
 //   0x0088  where the player starts: name hash of a save spot (see SavePoint)
 //   0x0090  respect            0x00A0  cash in cents
 //   0x0144  carried weapons: count, pointer to 16-byte records (name, count, loaded, spare)
@@ -35,6 +38,30 @@ namespace MpCharacterEditor
         public static void Put(byte[] d, int o, uint v)
         {
             d[o] = (byte)(v >> 24); d[o + 1] = (byte)(v >> 16); d[o + 2] = (byte)(v >> 8); d[o + 3] = (byte)v;
+        }
+    }
+
+    // The game's CRC-32: reflected (0xEDB88320), start 0, no final inversion. It is both the
+    // name hash (GameData.Hash) and the story save checksum (StorySave.Checksum).
+    static class Crc32
+    {
+        static readonly uint[] Table = MakeTable();
+        static uint[] MakeTable()
+        {
+            uint[] t = new uint[256];
+            for (uint i = 0; i < 256; i++)
+            {
+                uint c = i;
+                for (int k = 0; k < 8; k++) c = (c & 1) != 0 ? (c >> 1) ^ 0xEDB88320u : c >> 1;
+                t[i] = c;
+            }
+            return t;
+        }
+        public static uint Of(byte[] d, int start, int count)
+        {
+            uint c = 0;
+            for (int i = start; i < start + count; i++) c = Table[(c ^ d[i]) & 0xFF] ^ (c >> 8);
+            return c;
         }
     }
 
@@ -319,13 +346,8 @@ namespace MpCharacterEditor
         // The game's name hash: CRC-32 (reflected, start 0, no final inversion) of the lower-case name.
         public static uint Hash(string name)
         {
-            uint c = 0;
-            foreach (byte b in Encoding.UTF8.GetBytes(name.ToLowerInvariant()))
-            {
-                c ^= b;
-                for (int i = 0; i < 8; i++) c = (c & 1) != 0 ? (c >> 1) ^ 0xEDB88320u : c >> 1;
-            }
-            return c;
+            byte[] b = Encoding.UTF8.GetBytes(name.ToLowerInvariant());
+            return Crc32.Of(b, 0, b.Length);
         }
     }
 
@@ -1062,7 +1084,10 @@ namespace MpCharacterEditor
         // Where the player starts: the name hash of the save spot last saved at (see SavePoint).
         const int StartAt = 0x88;
         // (count, pointer) pairs in the header.
-        const int WeaponsAt = 0x144, FoodAt = 0x240, HomiesAt = 0x6E88, HoodsAt = 0x6E90, StashAt = 0x6F8C, EndPointerAt = 0x6FF8;
+        const int WeaponsAt = 0x144, FoodAt = 0x240, HomiesAt = 0x6E88, HoodsAt = 0x6E90, StashAt = 0x6F8C;
+        // The unlocked cheats: their size in bytes, and a pointer to their name hashes. The game
+        // writes this list last, so it also marks where the game's own data ends.
+        public const int CheatsSizeAt = 0x6FF4, CheatsAt = 0x6FF8;
         // The garage: count and pointer to 1160-byte records; the next car number; and the list that
         // follows the garage in the game's own layout (so a garage pointer past it is one this editor placed).
         const int GarageAt = 0x6E98, NextVehicleAt = 0x6EA0, AfterGarageAt = 0x6EA8;
@@ -1257,8 +1282,12 @@ namespace MpCharacterEditor
             int start = int.MaxValue;
             foreach (int p in new int[] { (int)U32(WeaponsAt + 4), (int)U32(FoodAt + 4) }) if (p > firstTable && p < start) start = p;
             if (garageOurs && (int)U32(GarageAt + 4) < start) start = (int)U32(GarageAt + 4);
-            if (start == int.MaxValue) start = (int)U32(EndPointerAt);
+            if (start == int.MaxValue) start = (int)U32(CheatsAt);
             if (start < 0x7000 || start > data.Length) return;
+            // The cheat list sits where the new block goes (or after it): keep a copy to put back after the block.
+            int cheatsSize = (int)Math.Min(U32(CheatsSizeAt), 512u), cheatsAt = (int)U32(CheatsAt);
+            byte[] cheats = new byte[cheatsAt >= 0x7000 && cheatsAt + cheatsSize <= data.Length ? cheatsSize : 0];
+            Buffer.BlockCopy(data, cheatsAt >= 0x7000 ? cheatsAt : 0, cheats, 0, cheats.Length);
 
             List<byte> block = new List<byte>();
             List<uint> weaponNames = new List<uint>(), foodNames = new List<uint>();
@@ -1280,6 +1309,8 @@ namespace MpCharacterEditor
                 while (block.Count % 16 != 0) block.Add(0);
             }
 
+            int cheatsPointer = start + block.Count;
+            block.AddRange(cheats);
             int end = start + block.Count;
             byte[] result = new byte[Math.Max(0x8800, (end + 0x7FF) & ~0x7FF)];
             Buffer.BlockCopy(data, 0, result, 0, start);
@@ -1288,7 +1319,7 @@ namespace MpCharacterEditor
             Be.Put(data, WeaponsAt, (uint)Weapons.Count); Be.Put(data, WeaponsAt + 4, (uint)weaponsPointer);
             Be.Put(data, FoodAt, (uint)Food.Count); Be.Put(data, FoodAt + 4, (uint)foodPointer);
             if (garagePointer >= 0) { Be.Put(data, GarageAt, (uint)Vehicles.Count); Be.Put(data, GarageAt + 4, (uint)garagePointer); }
-            Be.Put(data, EndPointerAt, (uint)end);
+            Be.Put(data, CheatsSizeAt, (uint)cheats.Length); Be.Put(data, CheatsAt, (uint)cheatsPointer);
             loaded = Inventory();
         }
         static void Add(List<byte> block, uint v)
@@ -1320,10 +1351,19 @@ namespace MpCharacterEditor
                 for (int k = 0; k < n; k++) { Be.Put(data, OwnedAt + 12 * k, (uint)Owned[k].Item); Be.Put(data, OwnedAt + 12 * k + 4, (uint)Owned[k].Variant); }
                 loadedOwned = OwnedText();
             }
+            SetChecksum(data);
+            SaveBackups.Keep(Path, "before saving");
             string backup = Backup(Path);
             File.WriteAllBytes(Path, data);
             return backup;
         }
+
+        public const uint Version = 23;
+        public const int MinSize = 0x7800;
+        // The checksum the game wants at 0x0000, and the one the file has.
+        public static uint Checksum(byte[] d) { return Crc32.Of(d, 4, d.Length - 4); }
+        public static uint StoredChecksum(byte[] d) { return Be.U32(d, 0); }
+        public static void SetChecksum(byte[] d) { Be.Put(d, 0, Checksum(d)); }
 
         // Keeps a dated copy of a file next to it and returns its name.
         public static string Backup(string path)

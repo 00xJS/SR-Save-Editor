@@ -15,7 +15,7 @@ cat > "$WORK/check.csproj" <<CSPROJ
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net48</TargetFramework><LangVersion>5</LangVersion>
     <AssemblyName>MpCharacterEditor</AssemblyName><EnableDefaultCompileItems>false</EnableDefaultCompileItems><GenerateAssemblyInfo>false</GenerateAssemblyInfo></PropertyGroup>
-  <ItemGroup><Compile Include="$PWD/MpCharacterEditor.cs" /><Compile Include="$PWD/Core.cs" />
+  <ItemGroup><Compile Include="$PWD/MpCharacterEditor.cs" /><Compile Include="$PWD/Core.cs" /><Compile Include="$PWD/SaveHealth.cs" />
     <Reference Include="System.Windows.Forms" /><Reference Include="System.Drawing" /><Reference Include="System.Xml" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" /></ItemGroup>
 </Project>

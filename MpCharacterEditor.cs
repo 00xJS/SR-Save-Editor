@@ -197,6 +197,7 @@ namespace MpCharacterEditor
                 Be.Put(data, OwnedAt + 12 * k, (uint)owned[k].Item);
                 Be.Put(data, OwnedAt + 12 * k + 4, (uint)owned[k].Variant);
             }
+            SaveBackups.Keep(Path, "before saving");
             string backup = StorySave.Backup(Path);
             File.WriteAllBytes(Path, data);
             return backup;
@@ -872,6 +873,7 @@ namespace MpCharacterEditor
                 onlineWardrobe = new WardrobePanel(wardrobe, sold, delegate { WornChanged(); });
                 wardrobeTabs.TabPages.Add(Page("Wearing", storyWardrobe)); wardrobeTabs.TabPages.Add(Page("Clothing owned", storyOwned));
                 wornPage.Controls.Add(onlineWardrobe);
+                wornPage.Controls.Add(OutfitRow(true));
                 Game.Remember(dist);
             }
             catch (Exception ex)
@@ -941,7 +943,9 @@ namespace MpCharacterEditor
             storyFolder.Click += delegate { if (ChooseFolder()) LoadGame(); };
             storyRestore.Text = "Restore backup..."; storyRestore.AutoSize = true;
             storyRestore.Click += delegate { RestoreStory(); };
-            top.Controls.Add(storySave); top.Controls.Add(storyReload); top.Controls.Add(storyRestore); top.Controls.Add(storyFolder);
+            Button checkSaves = new Button(); checkSaves.Text = "Check saves..."; checkSaves.AutoSize = true;
+            checkSaves.Click += delegate { CheckAllSaves(); };
+            top.Controls.Add(storySave); top.Controls.Add(storyReload); top.Controls.Add(storyRestore); top.Controls.Add(checkSaves); top.Controls.Add(storyFolder);
 
             // Player
             FlowLayoutPanel player = Row();
@@ -1067,6 +1071,7 @@ namespace MpCharacterEditor
             storyTabs.TabPages.Add(Page("Weapons", Fill(wheel, ammo)));
             wardrobeTabs.Dock = DockStyle.Fill;
             wardrobePage.Controls.Add(wardrobeTabs);
+            wardrobePage.Controls.Add(OutfitRow(false));
             storyTabs.TabPages.Add(wardrobePage);
             storyTabs.TabPages.Add(Page("Garage", BuildGarage()));
             storyTabs.TabPages.Add(Page("Crib weapons", Fill(stashList, stashTop)));
@@ -1175,7 +1180,10 @@ namespace MpCharacterEditor
         void LoadStory()
         {
             if (storyBox.SelectedIndex < 0) return;
-            try { story = new StorySave(storyFiles[storyBox.SelectedIndex]); }
+            string file = storyFiles[storyBox.SelectedIndex];
+            SaveBackups.Keep(file, "opened");
+            if (!CheckOnOpen(file)) return;
+            try { story = new StorySave(file); }
             catch (Exception ex)
             {
                 story = null;
@@ -1669,6 +1677,15 @@ namespace MpCharacterEditor
             menu.Show(Cursor.Position);
         }
 
+        // The file dialog for a backup opens in the editor's backup folder for that save, with the
+        // save's own folder (the older backups next to it) in the list on the left.
+        static void StartInBackups(FileDialog dlg, string save)
+        {
+            string mine = SaveBackups.FolderFor(save), here = Path.GetDirectoryName(save);
+            dlg.InitialDirectory = Directory.Exists(mine) ? mine : here;
+            try { dlg.CustomPlaces.Add(here); if (Directory.Exists(mine)) dlg.CustomPlaces.Add(mine); } catch (Exception) { }
+        }
+
         // Puts an earlier copy of the save back; the current one is kept as a backup first.
         void RestoreStory()
         {
@@ -1676,14 +1693,17 @@ namespace MpCharacterEditor
             using (OpenFileDialog dlg = new OpenFileDialog())
             {
                 dlg.Title = "Choose the backup to restore";
-                dlg.InitialDirectory = Path.GetDirectoryName(story.Path);
+                StartInBackups(dlg, story.Path);
                 dlg.Filter = "Save backups (game.dat.*)|game.dat.*|All files (*.*)|*.*";
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 try
                 {
                     new StorySave(dlg.FileName);   // checks that it is a save
+                    SaveBackups.Keep(story.Path, "before restoring");
                     string keep = StorySave.Backup(story.Path);
                     File.Copy(dlg.FileName, story.Path, true);
+                    // A backup written by an older version of the editor may carry a wrong checksum.
+                    if (SaveCheck.Check(story.Path).ChecksumOnly) SaveCheck.Repair(story.Path);
                     int selected = storyBox.SelectedIndex;
                     LoadStory();
                     MessageBox.Show(this, "Restored.\n\nThe save you had just now is kept as\n" + Path.GetFileName(keep), Text,
@@ -1728,12 +1748,248 @@ namespace MpCharacterEditor
             }
         }
 
+        // ---- Damaged saves ----
+
+        // Before a save is shown: if the game would call it damaged, say why and offer to repair it.
+        // Returns false when it should not be opened.
+        bool CheckOnOpen(string file)
+        {
+            if (Quiet) return true;
+            SaveReport r = SaveCheck.Check(file);
+            if (r.Worst < Health.Damaged) return true;
+            StringBuilder why = new StringBuilder();
+            foreach (Finding f in r.Findings) if (f.Level >= Health.Warning) why.AppendLine("- " + f.Text);
+            string good = r.DataDamaged && !r.ChecksumOnly ? SaveCheck.GoodBackup(file) : null;
+            if (!r.ChecksumOnly && good == null)
+            {
+                MessageBox.Show(this, "The game will say this save is damaged:\n\n" + why +
+                    (r.DataDamaged ? "\nNo backup the game would load was found, so it can't be repaired here." : ""),
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return true;   // opened as it is; the loader says if it can't be read
+            }
+            string how = r.ChecksumOnly ? "Repair writes the right checksum; nothing else in the save changes."
+                : "Repair puts back the newest backup the game would load:\n" + Path.GetFileName(good) + " (" + File.GetLastWriteTime(good).ToString("g") + ")";
+            if (MessageBox.Show(this, "The game will say this save is damaged:\n\n" + why + "\n" + how +
+                    "\n\nRepair it now? The file as it is now is kept as a backup.", Text,
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes && GameClosed())
+            {
+                try { MessageBox.Show(this, "Repaired: " + SaveCheck.Repair(file) + ".", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); }
+                catch (Exception ex) { MessageBox.Show(this, "The save could not be repaired.\n\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            }
+            return true;
+        }
+
+        // Every save in the game folder with what the game would make of it, and a way to repair them.
+        void CheckAllSaves()
+        {
+            if (dist == null) return;
+            Form f = new Form();
+            f.Text = "Check saves"; f.Font = Font; f.ClientSize = new Size(820, 420); f.StartPosition = FormStartPosition.CenterParent;
+            ListView list = new ListView();
+            SetUpList(list, false, "Save", 300, "Kind", 60, "Condition", 160, "What was found", 900);
+            Label help = new Label(); help.Dock = DockStyle.Top; help.Height = 34; help.Padding = new Padding(6, 6, 6, 0);
+            help.Text = "What the game checks: the checksum at the start of a story save, its version, and the save folder's name. " +
+                "Every save the editor opens is also backed up to " + SaveBackups.Root + ".";
+            FlowLayoutPanel buttons = Row(); buttons.Dock = DockStyle.Bottom;
+            Button repair = new Button(), repairAll = new Button(), open = new Button(), close = new Button();
+            repair.Text = "Repair selected"; repairAll.Text = "Repair all"; open.Text = "Open backups folder"; close.Text = "Close";
+            foreach (Button b in new Button[] { repair, repairAll, open, close }) { b.AutoSize = true; buttons.Controls.Add(b); }
+            List<string> files = new List<string>(Game.StorySaves(dist));
+            foreach (string p in Game.Players(dist)) files.Add(Game.CharacterFile(dist, p));
+            Action fill = delegate
+            {
+                list.Items.Clear();
+                foreach (string file in files)
+                {
+                    SaveReport r = SaveCheck.Check(file);
+                    StringBuilder what = new StringBuilder();
+                    foreach (Finding x in r.Findings) { if (what.Length > 0) what.Append("  "); what.Append(x.Text); }
+                    string title = r.Kind == "story" ? SaveTitle(file) : "Online: " + Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(file)));
+                    ListViewItem row = new ListViewItem(new string[] { title, r.Kind, r.Summary, what.Length > 0 ? what.ToString() : "nothing wrong" });
+                    row.Tag = r;
+                    if (r.Worst == Health.Damaged) row.ForeColor = Color.Firebrick;
+                    else if (r.Worst == Health.Warning) row.ForeColor = Color.DarkGoldenrod;
+                    list.Items.Add(row);
+                }
+            };
+            Action<IEnumerable<ListViewItem>> fix = delegate(IEnumerable<ListViewItem> rows)
+            {
+                if (!GameClosed()) return;
+                StringBuilder done = new StringBuilder();
+                foreach (ListViewItem row in rows)
+                {
+                    SaveReport r = (SaveReport)row.Tag;
+                    if (!r.DataDamaged) continue;
+                    string result;
+                    try { result = SaveCheck.Repair(r.Path) ?? "no backup the game would load was found"; }
+                    catch (Exception ex) { result = "failed: " + ex.Message; }
+                    done.AppendLine(row.Text + ": " + result);
+                }
+                fill();
+                MessageBox.Show(f, done.Length > 0 ? done.ToString() : "Nothing to repair. (A changed folder name has to be put back by hand.)", Text);
+                if (story != null) LoadStory();
+            };
+            repair.Click += delegate { List<ListViewItem> rows = new List<ListViewItem>(); foreach (ListViewItem i in list.SelectedItems) rows.Add(i); fix(rows); };
+            repairAll.Click += delegate { List<ListViewItem> rows = new List<ListViewItem>(); foreach (ListViewItem i in list.Items) rows.Add(i); fix(rows); };
+            open.Click += delegate { Directory.CreateDirectory(SaveBackups.Root); Process.Start("explorer.exe", "\"" + SaveBackups.Root + "\""); };
+            close.Click += delegate { f.Close(); };
+            f.Controls.Add(list); f.Controls.Add(help); f.Controls.Add(buttons);
+            f.Shown += delegate { fill(); };
+            f.ShowDialog(this);
+            f.Dispose();
+        }
+
+        // ---- Outfits: keep one in a file, or put it on other saves and the online character ----
+
+        FlowLayoutPanel OutfitRow(bool online)
+        {
+            FlowLayoutPanel row = Row();
+            Button export = new Button(), import = new Button(), copy = new Button();
+            export.Text = "Save outfit to file..."; import.Text = "Load outfit from file..."; copy.Text = "Copy outfit to other saves...";
+            foreach (Button b in new Button[] { export, import, copy }) { b.AutoSize = true; row.Controls.Add(b); }
+            export.Click += delegate { ExportOutfit(online); };
+            import.Click += delegate { ImportOutfit(online); };
+            copy.Click += delegate { CopyOutfit(online); };
+            return row;
+        }
+        List<WornItem> CurrentOutfit(bool online)
+        {
+            if (online) return character == null ? null : character.Outfit;
+            return story == null ? null : story.Outfit;
+        }
+        string CurrentName(bool online)
+        {
+            if (online) return character == null ? "" : "online character " + playerBox.SelectedItem;
+            return story == null ? "" : "story save " + storyBox.SelectedItem;
+        }
+        static string FileSafe(string s) { foreach (char c in Path.GetInvalidFileNameChars()) s = s.Replace(c, '-'); return s; }
+
+        void ExportOutfit(bool online)
+        {
+            List<WornItem> outfit = CurrentOutfit(online);
+            if (outfit == null) return;
+            Directory.CreateDirectory(OutfitFile.Folder);
+            using (SaveFileDialog dlg = new SaveFileDialog())
+            {
+                dlg.Title = "Save the outfit"; dlg.InitialDirectory = OutfitFile.Folder;
+                dlg.Filter = "Outfits (*" + OutfitFile.Extension + ")|*" + OutfitFile.Extension;
+                dlg.FileName = FileSafe((online ? "Online " + playerBox.SelectedItem : "Story " + storyBox.SelectedItem)) + OutfitFile.Extension;
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                try { OutfitFile.Write(dlg.FileName, outfit, CurrentName(online)); }
+                catch (Exception ex) { MessageBox.Show(this, "The outfit could not be saved.\n\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            }
+        }
+
+        void ImportOutfit(bool online)
+        {
+            if (CurrentOutfit(online) == null) return;
+            using (OpenFileDialog dlg = new OpenFileDialog())
+            {
+                dlg.Title = "Choose an outfit"; dlg.InitialDirectory = Directory.Exists(OutfitFile.Folder) ? OutfitFile.Folder : "";
+                dlg.Filter = "Outfits (*" + OutfitFile.Extension + ")|*" + OutfitFile.Extension;
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                try { PutOn(OutfitFile.Read(dlg.FileName), online); }
+                catch (Exception ex) { MessageBox.Show(this, "The outfit could not be read.\n\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            }
+        }
+
+        // Puts an outfit on the save that is open; it is written when Save is pressed.
+        void PutOn(List<WornItem> outfit, bool online)
+        {
+            int skipped;
+            List<WornItem> use = OutfitFor(outfit, online, out skipped);
+            List<WornItem> target = CurrentOutfit(online);
+            target.Clear(); target.AddRange(use);
+            if (online) { onlineWardrobe.Show(character.Outfit); WornChanged(); }
+            else { storyWardrobe.Show(story.Outfit); storyOwned.Show(story.Owned, story.Outfit); StoryChanged(); }
+            MessageBox.Show(this, "The outfit is on. Press Save to keep it." +
+                (skipped > 0 ? "\n\n" + skipped + " piece(s) are not sold in multiplayer, so they were left off the online character." : ""),
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        // The online character only keeps clothing that multiplayer sells.
+        List<WornItem> OutfitFor(List<WornItem> outfit, bool online, out int skipped)
+        {
+            skipped = 0;
+            List<WornItem> r = new List<WornItem>();
+            HashSet<long> sold = new HashSet<long>();
+            if (online && tables != null) foreach (Pair p in tables.Store) sold.Add(p.Key);
+            foreach (WornItem w in outfit)
+            {
+                if (online && wardrobe != null && wardrobe.IsClothing(w.Item) && !sold.Contains(new Pair(w.Item, w.Variant).Key)) { skipped++; continue; }
+                r.Add(new WornItem(w.Item, w.Variant, w.Slot, w.Mesh));
+            }
+            return r;
+        }
+
+        // Writes the outfit that is open into other saves straight away (each keeps a backup).
+        void CopyOutfit(bool online)
+        {
+            List<WornItem> outfit = CurrentOutfit(online);
+            if (outfit == null || dist == null) return;
+            string self = online ? character.Path : story.Path;
+            List<string> targets = new List<string>();
+            CheckedListBox box = new CheckedListBox(); box.Dock = DockStyle.Fill; box.CheckOnClick = true;
+            foreach (string file in Game.StorySaves(dist)) if (file != self) { targets.Add(file); box.Items.Add("Story: " + SaveTitle(file)); }
+            foreach (string p in Game.Players(dist)) { string file = Game.CharacterFile(dist, p); if (file != self) { targets.Add(file); box.Items.Add("Online: " + p); } }
+            if (targets.Count == 0) { MessageBox.Show(this, "There are no other saves to copy to.", Text); return; }
+            Form f = new Form(); f.Text = "Copy outfit to"; f.Font = Font; f.ClientSize = new Size(420, 360); f.StartPosition = FormStartPosition.CenterParent;
+            FlowLayoutPanel buttons = Row(); buttons.Dock = DockStyle.Bottom;
+            Button ok = new Button(), cancel = new Button();
+            ok.Text = "Copy"; cancel.Text = "Cancel"; ok.AutoSize = cancel.AutoSize = true;
+            ok.DialogResult = DialogResult.OK; cancel.DialogResult = DialogResult.Cancel;
+            buttons.Controls.Add(ok); buttons.Controls.Add(cancel);
+            Label l = new Label(); l.Dock = DockStyle.Top; l.Height = 40; l.Padding = new Padding(6, 6, 6, 0);
+            l.Text = "Tick the saves that should wear what " + CurrentName(online) + " wears now. They are written straight away.";
+            f.Controls.Add(box); f.Controls.Add(l); f.Controls.Add(buttons);
+            f.AcceptButton = ok; f.CancelButton = cancel;
+            DialogResult answer = f.ShowDialog(this);
+            List<string> picked = new List<string>();
+            foreach (int i in box.CheckedIndices) picked.Add(targets[i]);
+            f.Dispose();
+            if (answer != DialogResult.OK || picked.Count == 0 || !GameClosed()) return;
+            StringBuilder done = new StringBuilder();
+            foreach (string file in picked)
+            {
+                try { done.AppendLine(Path.GetFileName(Path.GetDirectoryName(file)) + ": " + WearInFile(file, outfit)); }
+                catch (Exception ex) { done.AppendLine(Path.GetFileName(Path.GetDirectoryName(file)) + ": failed, " + ex.Message); }
+            }
+            MessageBox.Show(this, done.ToString(), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        string WearInFile(string file, List<WornItem> outfit)
+        {
+            bool online = !SaveCheck.IsStory(file, File.ReadAllBytes(file));
+            int skipped;
+            List<WornItem> use = OutfitFor(outfit, online, out skipped);
+            SaveBackups.Keep(file, "opened");
+            if (online)
+            {
+                Character c = new Character(file);
+                c.Outfit = use;
+                List<Pair> owned = new List<Pair>(c.Owned);
+                HashSet<long> have = new HashSet<long>();
+                foreach (Pair p in owned) have.Add(p.Key);
+                foreach (WornItem w in use) if (tables.Items.ContainsKey(w.Item) && have.Add(new Pair(w.Item, w.Variant).Key)) owned.Add(new Pair(w.Item, w.Variant));
+                c.Save(c.Cents, owned);
+            }
+            else
+            {
+                StorySave s = new StorySave(file);
+                s.Outfit = use;
+                if (wardrobe != null) s.OwnWorn(wardrobe);
+                s.Save();
+            }
+            return "done" + (skipped > 0 ? " (" + skipped + " piece(s) not sold in multiplayer left off)" : "");
+        }
+
         // ---- Online character ----
 
         void LoadCharacter()
         {
             if (playerBox.SelectedItem == null) return;
-            try { character = new Character(Game.CharacterFile(dist, (string)playerBox.SelectedItem)); }
+            string file = Game.CharacterFile(dist, (string)playerBox.SelectedItem);
+            SaveBackups.Keep(file, "opened");
+            if (!CheckOnOpen(file)) return;
+            try { character = new Character(file); }
             catch (Exception ex)
             {
                 character = null;
@@ -1865,13 +2121,14 @@ namespace MpCharacterEditor
             using (OpenFileDialog dlg = new OpenFileDialog())
             {
                 dlg.Title = "Choose the backup to restore";
-                dlg.InitialDirectory = Path.GetDirectoryName(character.Path);
+                StartInBackups(dlg, character.Path);
                 dlg.Filter = "Character backups (3_MPStorage.*)|3_MPStorage.*|All files (*.*)|*.*";
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 try
                 {
                     if (new FileInfo(dlg.FileName).Length != Character.Size)
                         throw new InvalidDataException("That file is not a multiplayer character file.");
+                    SaveBackups.Keep(character.Path, "before restoring");
                     string keep = StorySave.Backup(character.Path);
                     File.Copy(dlg.FileName, character.Path, true);
                     LoadCharacter();
@@ -2102,6 +2359,76 @@ namespace MpCharacterEditor
             return 0;
         }
 
+        // "--check-saves <report file> <file or folder>..." checks every save found; "--repair-saves"
+        // repairs the damaged ones too. Exit code 1 when a save is (still) damaged.
+        static int CheckSaves(string[] args)
+        {
+            bool repair = args[0] == "--repair-saves";
+            List<string> files = new List<string>();
+            for (int i = 2; i < args.Length; i++)
+            {
+                if (File.Exists(args[i])) { files.Add(args[i]); continue; }
+                if (!Directory.Exists(args[i])) continue;
+                foreach (string f in Directory.GetFiles(args[i], "*", SearchOption.AllDirectories))
+                {
+                    string n = Path.GetFileName(f);
+                    if (n == "game.dat" || n.StartsWith("game.dat.") || n.StartsWith("3_MPStorage")) files.Add(f);
+                }
+            }
+            files.Sort(StringComparer.Ordinal);
+            StringBuilder sb = new StringBuilder();
+            int damaged = 0;
+            foreach (string f in files)
+            {
+                SaveReport r = SaveCheck.Check(f);
+                if (repair && r.DataDamaged)
+                {
+                    string done = SaveCheck.Repair(f);
+                    sb.AppendLine("repair " + f + ": " + (done ?? "no good backup"));
+                    r = SaveCheck.Check(f);
+                }
+                if (r.Worst == Health.Damaged) damaged++;
+                sb.Append(r);
+            }
+            sb.AppendLine(files.Count + " saves, " + damaged + " damaged");
+            File.WriteAllText(args[1], sb.ToString());
+            return damaged > 0 ? 1 : 0;
+        }
+
+        // "--outfit-apply <outfit file> <game.dat or 3_MPStorage>...": puts the outfit on each save.
+        static int ApplyOutfit(string[] args)
+        {
+            List<WornItem> outfit = OutfitFile.Read(args[1]);
+            for (int i = 2; i < args.Length; i++)
+            {
+                string file = args[i];
+                GameData game = GameNear(file);
+                if (cliWardrobe == null) cliWardrobe = new WardrobeTables(game);
+                List<WornItem> use = new List<WornItem>();
+                foreach (WornItem w in outfit) use.Add(new WornItem(w.Item, w.Variant, w.Slot, w.Mesh));
+                if (SaveCheck.IsStory(file, File.ReadAllBytes(file)))
+                {
+                    StorySave s = new StorySave(file);
+                    s.Outfit = use; s.OwnWorn(cliWardrobe); s.Save();
+                }
+                else
+                {
+                    Character c = new Character(file);
+                    Tables t = new Tables(game);
+                    HashSet<long> sold = new HashSet<long>();
+                    foreach (Pair p in t.Store) sold.Add(p.Key);
+                    use.RemoveAll(delegate(WornItem w) { return cliWardrobe.IsClothing(w.Item) && !sold.Contains(new Pair(w.Item, w.Variant).Key); });
+                    c.Outfit = use;
+                    List<Pair> owned = new List<Pair>(c.Owned);
+                    HashSet<long> have = new HashSet<long>();
+                    foreach (Pair p in owned) have.Add(p.Key);
+                    foreach (WornItem w in use) if (t.Items.ContainsKey(w.Item) && have.Add(new Pair(w.Item, w.Variant).Key)) owned.Add(new Pair(w.Item, w.Variant));
+                    c.Save(c.Cents, owned);
+                }
+            }
+            return 0;
+        }
+
         // "--picture <png file> [section] [story tab]": draws the window to a picture without putting
         // it on screen, for testing.
         static int Picture(string png, int section, int storyTab)
@@ -2135,6 +2462,15 @@ namespace MpCharacterEditor
                 c.Save(c.Cents, c.Owned);
                 return 0;
             }
+            if (args.Length >= 3 && (args[0] == "--check-saves" || args[0] == "--repair-saves")) return CheckSaves(args);
+            if (args.Length == 3 && args[0] == "--outfit-export")
+            {
+                // --outfit-export <game.dat or 3_MPStorage> <outfit file>
+                bool story = SaveCheck.IsStory(args[1], File.ReadAllBytes(args[1]));
+                OutfitFile.Write(args[2], story ? new StorySave(args[1]).Outfit : new Character(args[1]).Outfit, args[1]);
+                return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--outfit-apply") return ApplyOutfit(args);
             if (args.Length >= 3 && args[0] == "--story") return Story(args);
             if (args.Length >= 3 && args[0] == "--mp") return Mp(args);
             Application.EnableVisualStyles();
