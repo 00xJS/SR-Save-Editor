@@ -5,6 +5,8 @@ let args = CommandLine.arguments
 guard args.count >= 3 else {
     print("""
     usage: sredit info <game.dat> | mp <3_MPStorage> [cash=N wear:...] | backups <file> | restore <file> <backup>
+           sredit check <file or folder>... | repair <file or folder>...
+           sredit outfit-export <game.dat or 3_MPStorage> <file.sroutfit> | outfit-apply <file.sroutfit> <save>...
            sredit set <game.dat> cash=N respect=N hood:<name|all>=<0-3> contact:<name|all>=<0|1>
                   weapon:<name>=<magazine>/<spare>|none food=<name,name,...> stash:<name|all>=<0|1>
                   wear:<item id>=<variant id>/<mesh id>   wear:<slot number>=none   own:<item id>/<variant id>=<0|1>
@@ -28,7 +30,52 @@ do {
         exit(0)
     }
     if args[1] == "backups" {
-        for b in Backups.list(for: file) { print(b.lastPathComponent) }
+        for b in Backups.all(for: file) { print(b.lastPathComponent) }
+        exit(0)
+    }
+    if args[1] == "check" || args[1] == "repair" {
+        // sredit check|repair <file or folder>...: what the game would make of each save (and repair
+        // the damaged ones). Prints the same report as the Windows --check-saves. Exit 1 when one is damaged.
+        var files: [URL] = []
+        for a in args.dropFirst(2) {
+            let u = URL(fileURLWithPath: a)
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: u.path, isDirectory: &isDir) else { continue }
+            if !isDir.boolValue { files.append(u); continue }
+            let all = FileManager.default.enumerator(at: u, includingPropertiesForKeys: nil)?.compactMap { $0 as? URL } ?? []
+            files += all.filter { let n = $0.lastPathComponent; return n == "game.dat" || n.hasPrefix("game.dat.") || n.hasPrefix("3_MPStorage") }
+        }
+        var damaged = 0
+        for f in files.sorted(by: { $0.path < $1.path }) {
+            var r = SaveCheck.check(f)
+            if args[1] == "repair", r.dataDamaged {
+                let done = try SaveCheck.repair(f)
+                print("repair \(f.path): \(done ?? "no good backup")")
+                r = SaveCheck.check(f)
+            }
+            if r.worst == .damaged { damaged += 1 }
+            print(r, terminator: "")
+        }
+        print("\(files.count) saves, \(damaged) damaged")
+        exit(damaged > 0 ? 1 : 0)
+    }
+    if args[1] == "outfit-export", args.count >= 4 {
+        // sredit outfit-export <game.dat or 3_MPStorage> <outfit file>
+        let d = [UInt8](try Data(contentsOf: file))
+        let outfit = try SaveCheck.isStory(file, d) ? SinglePlayerSave(url: file).outfit : MpCharacter(url: file).outfit
+        try OutfitFile.write(outfit, to: URL(fileURLWithPath: args[3]), from: file.path)
+        exit(0)
+    }
+    if args[1] == "outfit-apply", args.count >= 4 {
+        // sredit outfit-apply <outfit file> <game.dat or 3_MPStorage>...: puts the outfit on each save.
+        let outfit = try OutfitFile.read(file)
+        for a in args.dropFirst(3) {
+            let target = URL(fileURLWithPath: a)
+            let t = GameTables.find(near: target).flatMap { try? GameTables(packfile: $0) }
+            let store = Set(t.map { ClothingTables(tables: $0).store.map(\.pair) } ?? [])
+            let done = try OutfitFile.wear(outfit, in: target, wardrobe: t.map { WardrobeTables(tables: $0) }, store: store)
+            print(a + ":", done)
+        }
         exit(0)
     }
     // wear:<item>=<variant>/<mesh> puts an item on (the slot follows from the mesh); wear:<slot>=none takes one off.

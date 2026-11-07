@@ -49,16 +49,17 @@ Every save keeps the previous file next to it, as `game.dat.<date>-<time>.bak`
 or `3_MPStorage.<date>-<time>.bak`. **Restore backup…** puts one of them back
 (and keeps the file you had as another backup).
 
-On Windows the editor also copies every save **as soon as it opens it**, and
-again before it saves, repairs or restores, into its own folder:
-`%LOCALAPPDATA%\SaintsRebornMpEditor\Backups` (one folder per save, with the
-game's list entry for it). A copy is only made when the file changed, and
+The editor also copies every save **as soon as it opens it**, and again
+before it saves, repairs or restores, into its own folder (one folder per save,
+with the game's list entry for it): on Windows
+`%LOCALAPPDATA%\SaintsRebornMpEditor\Backups`, on the Mac
+`~/Library/Application Support/Saints Reborn Save Editor/Backups`. A copy is only made when the file changed, and
 these copies are outside the game's folders, so they are still there if the
 game deletes a save. **Restore backup…** opens in that folder.
 
 ## Damaged saves
 
-**Check saves…** (Windows, Story save) checks every save the way the game
+**Check saves…** checks every save the way the game
 does, and **Repair** fixes what can be fixed:
 
 - A story save starts with a checksum of the rest of the file. If it does not
@@ -76,8 +77,8 @@ Opening a damaged save offers the same repair.
 ## Outfits
 
 On the **Wardrobe** screen of a story save, and on the online character's
-**Wearing** screen: **Save outfit to file…** keeps what the character wears in
-`Documents\Saints Reborn Outfits`, **Load outfit from file…** puts one on, and
+screen (the **Outfit** menu on the Mac): **Save outfit to file…** keeps what the character wears in
+`Documents/Saints Reborn Outfits` (the same files work on both), **Load outfit from file…** puts one on, and
 **Copy outfit to other saves…** writes it into the story saves and online
 characters you tick. The online character only keeps clothing that
 multiplayer sells, so other pieces are left off it.

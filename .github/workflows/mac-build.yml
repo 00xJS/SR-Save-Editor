@@ -1,0 +1,19 @@
+# Builds the Mac version on a macOS runner, so Swift changes made on Windows are
+# compiled before anyone opens the app. Runs only when the Mac sources change.
+name: Mac build
+on:
+  push:
+    paths: ["mac/**", ".github/workflows/mac-build.yml"]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the app and sredit
+        run: ./mac/build.sh
+      - name: sredit runs
+        run: |
+          ./mac/build/sredit > usage.txt 2>&1 || true
+          grep -q "sredit check" usage.txt

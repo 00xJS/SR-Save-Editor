@@ -54,3 +54,13 @@ if [ -f "$MP" ]; then
   cmp "$WORK/mac/game/3_MPStorage" "$WORK/win/game/3_MPStorage"
 fi
 echo "ok: both editors wrote identical saves"
+
+# The save checker: both versions give the same verdict on every save tests/collect-saves.sh gathered.
+if [ -s tests/saves/manifest.tsv ]; then
+  cp -r tests/saves "$WORK/corpus"
+  ./mac/build/sredit check "$WORK/corpus" > "$WORK/mac-check.txt" || true
+  "$WINE" "$EXE" --check-saves "Z:$WORK/win-check.txt" "Z:$WORK/corpus" 2>/dev/null || true
+  verdicts() { tr '\\' / < "$1" | tr -d '\r' | sed -nE 's#^(story|online) .*/corpus/(.*): (.*)$#\1 \2: \3#p' | sort; }
+  diff <(verdicts "$WORK/mac-check.txt") <(verdicts "$WORK/win-check.txt")
+  echo "ok: both checkers agree on $(verdicts "$WORK/mac-check.txt" | wc -l | tr -d ' ') saves"
+fi

@@ -1,6 +1,7 @@
 // Saints Reborn Save Editor for macOS (unofficial). Contains no game data or artwork.
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 final class Editor: ObservableObject {
     @Published var saves: [URL] = []
@@ -34,6 +35,8 @@ final class Editor: ObservableObject {
         return wardrobeTables
     }
     private var spDirty = false, mpDirty = false
+    /// A save that was just opened and that the game would call damaged (shown as an alert).
+    @Published var damaged: SaveReport?
 
     static var defaultGameFolder: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("SaintsReborn/dist/game") }
 
@@ -75,6 +78,7 @@ final class Editor: ObservableObject {
     }
 
     func open(_ url: URL) {
+        checkOnOpen(url)
         do {
             let s = try SinglePlayerSave(url: url)
             if tables == nil { loadTables(near: url) }
@@ -96,6 +100,7 @@ final class Editor: ObservableObject {
 
     func openPlayer(_ name: String) {
         guard let p = players.first(where: { $0.name == name }) else { return }
+        checkOnOpen(p.file)
         do {
             let c = try MpCharacter(url: p.file)
             character = c; playerName = name; mpDirty = false
@@ -136,6 +141,86 @@ final class Editor: ObservableObject {
                 status = "Restored \(backup.lastPathComponent). The save you had is kept as \(kept.lastPathComponent)."
             }
         } catch { status = "Could not restore: \(error.localizedDescription)" }
+    }
+
+    // MARK: Damaged saves
+
+    /// Every save is copied to the editor's backup folder when it is opened, and checked the way the game checks it.
+    private func checkOnOpen(_ url: URL) {
+        EditorBackups.keep(url, reason: "opened")
+        let r = SaveCheck.check(url)
+        if r.worst == .damaged { damaged = r }
+    }
+    var allFiles: [URL] { saves + players.map { $0.file } }
+    func name(of url: URL) -> String {
+        if let p = players.first(where: { $0.file == url }) { return "Online: \(p.name)" }
+        return "Story: \(title(of: url))"
+    }
+    func canRepair(_ r: SaveReport) -> Bool { r.checksumOnly || (r.dataDamaged && SaveCheck.goodBackup(for: r.url) != nil) }
+    /// What Repair would do, for the alert.
+    func repairPlan(_ r: SaveReport) -> String {
+        if r.checksumOnly { return "Repair writes the right checksum; nothing else in the save changes." }
+        if r.dataDamaged, let good = SaveCheck.goodBackup(for: r.url) { return "Repair puts back the newest backup the game would load: \(good.lastPathComponent)." }
+        return r.dataDamaged ? "No backup the game would load was found, so it can't be repaired here." : "Give the save's folder back its old name."
+    }
+    /// Repairs a save (keeping it as it was first) and opens it again. Returns what was done.
+    @discardableResult func repair(_ r: SaveReport) -> String {
+        if Self.gameRunning { status = "Saints Reborn is running. Close the game first."; return status }
+        do {
+            let done = try SaveCheck.repair(r.url) ?? "no backup the game would load was found"
+            status = "\(name(of: r.url)): \(done)."
+            if r.url == save?.url { open(r.url) } else if r.url == character?.url { openPlayer(playerName) }
+            return done
+        } catch { status = "Could not repair: \(error.localizedDescription)"; return status }
+    }
+
+    // MARK: Outfits
+
+    private static let outfitType = UTType(filenameExtension: OutfitFile.fileExtension) ?? .data
+    private var store: Set<ClothingPair> { Set(clothing?.store.map(\.pair) ?? []) }
+
+    func exportOutfit(online: Bool) {
+        try? FileManager.default.createDirectory(at: OutfitFile.folder, withIntermediateDirectories: true)
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [Self.outfitType]; panel.directoryURL = OutfitFile.folder
+        let from = online ? "Online \(playerName)" : "Story \(selected.map { title(of: $0) } ?? "")"
+        panel.nameFieldStringValue = from.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-") + "." + OutfitFile.fileExtension
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try OutfitFile.write(online ? mpOutfit : outfit, to: url, from: from); status = "Outfit saved to \(url.lastPathComponent)." }
+        catch { status = "Could not save the outfit: \(error.localizedDescription)" }
+    }
+
+    func importOutfit(online: Bool) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [Self.outfitType]; panel.directoryURL = OutfitFile.folder
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let o = try OutfitFile.read(url)
+            if online {
+                let (use, skipped) = OutfitFile.forOnline(o, wardrobe: wardrobe, store: store)
+                mpOutfit = use; touchOnline()
+                status = "The outfit is on. Press Save to keep it." + (skipped > 0 ? " \(skipped) piece(s) are not sold in multiplayer, so they were left off." : "")
+            } else {
+                outfit = o
+                if let w = wardrobe { for x in o where w.isClothing(x.item) { storyOwned.insert(ClothingPair(item: x.item, variant: x.variant)) } }
+                touch()
+                status = "The outfit is on. Press Save to keep it."
+            }
+        } catch { status = "Could not read the outfit: \(error)" }
+    }
+
+    /// Writes the outfit shown now straight into other saves (each keeps a backup).
+    func copyOutfit(online: Bool, to targets: [URL]) {
+        if Self.gameRunning { status = "Saints Reborn is running. Close the game first."; return }
+        let o = online ? mpOutfit : outfit
+        var notes: [String] = []
+        for t in targets {
+            if (t == save?.url && spDirty) || (t == character?.url && mpDirty) { notes.append("\(name(of: t)): has changes that are not saved; save it first"); continue }
+            do { let done = try OutfitFile.wear(o, in: t, wardrobe: wardrobe, store: store); notes.append("\(name(of: t)): \(done)") }
+            catch { notes.append("\(name(of: t)): failed, \(error)") }
+            if t == save?.url { open(t) } else if t == character?.url { openPlayer(playerName) }
+        }
+        status = notes.joined(separator: "; ")
     }
 
     func write() {
@@ -352,6 +437,7 @@ struct ContentView: View {
     @State var onlineTab = 0
     @State var wardrobeTab = 0
     @State var selectedCar: Int?
+    @State var checking = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -367,6 +453,7 @@ struct ContentView: View {
                     }
                 }
                 Spacer()
+                Button("Check saves…") { checking = true }
                 restoreMenu
                 Button("Save") { editor.write() }.keyboardShortcut("s").disabled(!editor.canSave)
             }.padding(10)
@@ -399,13 +486,23 @@ struct ContentView: View {
             Divider()
             HStack { Text(editor.status).font(.callout).foregroundColor(.secondary).lineLimit(2); Spacer() }.padding(8)
         }.frame(minWidth: 900, minHeight: 680)
+        .sheet(isPresented: $checking) { SaveCheckView(editor: editor) }
+        .alert("The game will say this save is damaged", isPresented: Binding(get: { editor.damaged != nil }, set: { if !$0 { editor.damaged = nil } }), presenting: editor.damaged) { r in
+            if editor.canRepair(r) {
+                Button("Repair") { editor.repair(r) }
+                Button("Not now", role: .cancel) {}
+            } else { Button("OK", role: .cancel) {} }
+        } message: { r in
+            Text(r.findings.filter { $0.level >= .warning }.map { "• " + $0.text }.joined(separator: "\n") + "\n\n" + editor.repairPlan(r) +
+                 (editor.canRepair(r) ? " The file as it is now is kept as a backup." : ""))
+        }
     }
 
     /// Restore backup…: the dated copies of whichever file the current screen edits.
     @ViewBuilder var restoreMenu: some View {
         let online = screen == .online
         let file: URL? = online ? editor.character?.url : editor.save?.url
-        let backups = file.map { Backups.list(for: $0) } ?? []
+        let backups = file.map { Backups.all(for: $0) } ?? []
         Menu("Restore backup…") {
             if backups.isEmpty { Text("No backups yet") }
             ForEach(backups, id: \.self) { b in
@@ -464,8 +561,12 @@ struct ContentView: View {
     @ViewBuilder var wardrobeScreen: some View {
         if let w = editor.wardrobe {
             VStack(spacing: 0) {
-                Picker("", selection: $wardrobeTab) { Text("Wearing").tag(0); Text("Clothing owned").tag(1) }
-                    .pickerStyle(.segmented).labelsHidden().frame(width: 260).padding(10)
+                HStack {
+                    Picker("", selection: $wardrobeTab) { Text("Wearing").tag(0); Text("Clothing owned").tag(1) }
+                        .pickerStyle(.segmented).labelsHidden().frame(width: 260)
+                    Spacer()
+                    OutfitMenu(editor: editor, online: false)
+                }.padding(10)
                 if wardrobeTab == 0 {
                     WardrobeView(outfit: $editor.outfit, tables: w) { editor.touch() }
                 } else {
@@ -633,6 +734,7 @@ struct ContentView: View {
                     TextField("Cash ($)", text: $editor.mpCashText).textFieldStyle(.roundedBorder).frame(width: 150)
                         .onChange(of: editor.mpCashText) { _ in editor.touchOnline() }
                     Spacer()
+                    OutfitMenu(editor: editor, online: true)
                 }.padding(10)
                 Picker("", selection: $onlineTab) { Text("Clothing owned").tag(0); Text("Wearing").tag(1) }.pickerStyle(.segmented).labelsHidden().frame(width: 260).padding(.horizontal, 10).padding(.bottom, 8)
                 if onlineTab == 1 {
@@ -646,6 +748,89 @@ struct ContentView: View {
         } else {
             Text("No online character found. In the game, open MULTIPLAYER, change something in the wardrobe and save, then use Open… here.").foregroundColor(.secondary).padding()
         }
+    }
+}
+
+// MARK: - Damaged saves and outfits
+
+/// Every save in the game folder with what the game would make of it, and a way to repair them.
+struct SaveCheckView: View {
+    @ObservedObject var editor: Editor
+    @Environment(\.dismiss) private var dismiss
+    @State private var reports: [SaveReport] = []
+    @State private var picked = Set<URL>()
+    @State private var note = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("What the game checks: the checksum at the start of a story save, its version, and the save folder's name. Every save the editor opens is also backed up to \(EditorBackups.root.path).")
+                .foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            Table(reports, selection: $picked) {
+                TableColumn("Save") { (r: SaveReport) in Text(editor.name(of: r.url)) }.width(min: 160, ideal: 240)
+                TableColumn("Condition") { (r: SaveReport) in Text(r.summary).foregroundColor(r.worst == .damaged ? .red : r.worst == .warning ? .orange : .primary) }.width(170)
+                TableColumn("What was found") { (r: SaveReport) in
+                    Text(r.findings.isEmpty ? "nothing wrong" : r.findings.map(\.text).joined(separator: "  "))
+                }
+            }
+            if !note.isEmpty { Text(note).font(.callout).fixedSize(horizontal: false, vertical: true) }
+            HStack {
+                Button("Repair selected") { fix(reports.filter { picked.contains($0.url) }) }.disabled(picked.isEmpty)
+                Button("Repair all") { fix(reports) }
+                Button("Show backups in Finder") {
+                    try? FileManager.default.createDirectory(at: EditorBackups.root, withIntermediateDirectories: true)
+                    NSWorkspace.shared.open(EditorBackups.root)
+                }
+                Spacer()
+                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+        }.padding().frame(minWidth: 820, minHeight: 420).onAppear(perform: refresh)
+    }
+
+    private func refresh() { reports = editor.allFiles.map { SaveCheck.check($0) } }
+    private func fix(_ rows: [SaveReport]) {
+        let notes = rows.filter { $0.dataDamaged }.map { "\(editor.name(of: $0.url)): \(editor.repair($0))" }
+        note = notes.isEmpty ? "Nothing to repair. (A changed folder name has to be put back by hand.)" : notes.joined(separator: "\n")
+        refresh()
+    }
+}
+
+/// Outfit: save to a file, load from a file, or copy to other saves.
+struct OutfitMenu: View {
+    @ObservedObject var editor: Editor
+    let online: Bool
+    @State private var copying = false
+    var body: some View {
+        Menu("Outfit") {
+            Button("Save outfit to file…") { editor.exportOutfit(online: online) }
+            Button("Load outfit from file…") { editor.importOutfit(online: online) }
+            Button("Copy outfit to other saves…") { copying = true }
+        }
+        .frame(width: 110)
+        .sheet(isPresented: $copying) { CopyOutfitView(editor: editor, online: online) }
+    }
+}
+
+struct CopyOutfitView: View {
+    @ObservedObject var editor: Editor
+    let online: Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var picked = Set<URL>()
+    var body: some View {
+        let mine = online ? editor.character?.url : editor.save?.url
+        let targets = editor.allFiles.filter { $0 != mine }
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Tick the saves that should wear what this character wears now. They are written straight away, and each keeps a backup.")
+                .fixedSize(horizontal: false, vertical: true)
+            List(targets, id: \.self) { u in
+                Toggle(editor.name(of: u), isOn: Binding(get: { picked.contains(u) }, set: { if $0 { picked.insert(u) } else { picked.remove(u) } }))
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Copy") { editor.copyOutfit(online: online, to: targets.filter { picked.contains($0) }); dismiss() }
+                    .keyboardShortcut(.defaultAction).disabled(picked.isEmpty)
+            }
+        }.padding().frame(width: 460, height: 400)
     }
 }
 

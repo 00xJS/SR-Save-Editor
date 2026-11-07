@@ -269,6 +269,7 @@ final class SinglePlayerSave {
         // The checksum the game's loader checks: CRC-32 of every byte after the first four.
         let sum = GameTables.crc32(data.dropFirst(4))
         setU32(0, sum)
+        EditorBackups.keep(url, reason: "before saving")
         let backup = try Backups.keep(url)
         try data.write(to: url, options: .atomic)
         return backup
@@ -294,9 +295,16 @@ enum Backups {
     }
     /// Puts a backup in place of the file; the file as it is now is kept as a backup first.
     static func restore(_ backup: URL, to url: URL) throws -> URL {
+        EditorBackups.keep(url, reason: "before restoring")
         let kept = try keep(url)
-        let data = try Data(contentsOf: backup)
-        try data.write(to: url, options: .atomic)
+        try Data(contentsOf: backup).write(to: url, options: .atomic)
+        // A backup written by an older version of the editor may carry a wrong checksum.
+        if SaveCheck.check(url).checksumOnly { _ = try SaveCheck.repair(url) }
         return kept
+    }
+    /// Every copy to offer for Restore backup…: the editor's own folder and the ones next to the file, newest first.
+    static func all(for url: URL) -> [URL] {
+        func date(_ u: URL) -> Date { (try? u.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast }
+        return (EditorBackups.list(for: url) + list(for: url)).sorted { date($0) > date($1) }
     }
 }
