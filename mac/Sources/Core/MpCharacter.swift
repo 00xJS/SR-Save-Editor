@@ -105,6 +105,7 @@ final class MpCharacter {
         for (k, p) in owned.enumerated() {
             put(Self.ownedAt + 12 * k, UInt32(p.item)); put(Self.ownedAt + 12 * k + 4, UInt32(p.variant))
         }
+        EditorBackups.keep(url, reason: "before saving")
         let backup = try Backups.keep(url)
         try Data(data).write(to: url, options: .atomic)
         return backup

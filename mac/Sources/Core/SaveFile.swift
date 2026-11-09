@@ -49,7 +49,9 @@ final class SinglePlayerSave {
     private static let respectOffset = 0x90, respectTotalOffset = 0x94, respectNeededOffset = 0x98, cashOffset = 0xA0
     // (count, pointer) pairs in the header.
     private static let weaponsAt = 0x144, foodAt = 0x240, contactsAt = 0x6E88, hoodsAt = 0x6E90, stashAt = 0x6F8C
-    private static let endPointerAt = 0x6FF8
+    /// The unlocked cheats: size in bytes, and a pointer to their name hashes. The game writes
+    /// this list last, so it also marks where the game's own data ends.
+    private static let cheatsSizeAt = 0x6FF4, cheatsAt = 0x6FF8
     // The garage: count and pointer to 1160-byte records; the next car number; and the list
     // that follows the garage in the game's own layout (so a garage pointer past it is one this editor placed).
     private static let garageAt = 0x6E98, nextVehicleAt = 0x6EA0, afterGarageAt = 0x6EA8
@@ -198,8 +200,11 @@ final class SinglePlayerSave {
         let firstTable = Int(u32(Self.contactsAt + 4))
         var ours = [Int(u32(Self.weaponsAt + 4)), Int(u32(Self.foodAt + 4))].filter { $0 > firstTable }
         if garageOurs { ours.append(Int(u32(Self.garageAt + 4))) }
-        let start = ours.min() ?? Int(u32(Self.endPointerAt))
+        let start = ours.min() ?? Int(u32(Self.cheatsAt))
         guard start >= 0x7000, start <= data.count else { return }
+        // The cheat list sits where the new block goes (or after it): keep a copy to put back after the block.
+        let cheatsSize = Int(min(u32(Self.cheatsSizeAt), 512)), cheatsFrom = Int(u32(Self.cheatsAt))
+        let cheats: [UInt8] = cheatsFrom >= 0x7000 && cheatsFrom + cheatsSize <= data.count ? Array(data[cheatsFrom..<cheatsFrom + cheatsSize]) : []
 
         var block: [UInt8] = []
         func pad() { while block.count % 16 != 0 { block.append(0) } }
@@ -222,6 +227,8 @@ final class SinglePlayerSave {
             pad()
         }
 
+        let cheatsPointer = start + block.count
+        block += cheats
         let end = start + block.count
         var out = Data(data.prefix(start))
         out.append(contentsOf: block)
@@ -230,7 +237,7 @@ final class SinglePlayerSave {
         setU32(Self.weaponsAt, UInt32(weapons.count)); setU32(Self.weaponsAt + 4, UInt32(weaponsPointer))
         setU32(Self.foodAt, UInt32(food.count)); setU32(Self.foodAt + 4, UInt32(foodPointer))
         if let g = garagePointer { setU32(Self.garageAt, UInt32(vehicles.count)); setU32(Self.garageAt + 4, UInt32(g)) }
-        setU32(Self.endPointerAt, UInt32(end))
+        setU32(Self.cheatsSizeAt, UInt32(cheats.count)); setU32(Self.cheatsAt, UInt32(cheatsPointer))
         loadedWeapons = weapons; loadedFood = food; loadedVehicles = vehicles
     }
 
@@ -259,6 +266,10 @@ final class SinglePlayerSave {
         writeInventory()
         writeOutfit()
         writeOwned()
+        // The checksum the game's loader checks: CRC-32 of every byte after the first four.
+        let sum = GameTables.crc32(data.dropFirst(4))
+        setU32(0, sum)
+        EditorBackups.keep(url, reason: "before saving")
         let backup = try Backups.keep(url)
         try data.write(to: url, options: .atomic)
         return backup
@@ -284,9 +295,16 @@ enum Backups {
     }
     /// Puts a backup in place of the file; the file as it is now is kept as a backup first.
     static func restore(_ backup: URL, to url: URL) throws -> URL {
+        EditorBackups.keep(url, reason: "before restoring")
         let kept = try keep(url)
-        let data = try Data(contentsOf: backup)
-        try data.write(to: url, options: .atomic)
+        try Data(contentsOf: backup).write(to: url, options: .atomic)
+        // A backup written by an older version of the editor may carry a wrong checksum.
+        if SaveCheck.check(url).checksumOnly { _ = try SaveCheck.repair(url) }
         return kept
+    }
+    /// Every copy to offer for Restore backup…: the editor's own folder and the ones next to the file, newest first.
+    static func all(for url: URL) -> [URL] {
+        func date(_ u: URL) -> Date { (try? u.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast }
+        return (EditorBackups.list(for: url) + list(for: url)).sorted { date($0) > date($1) }
     }
 }

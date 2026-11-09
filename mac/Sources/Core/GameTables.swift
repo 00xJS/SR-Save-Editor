@@ -113,12 +113,17 @@ final class GameTables {
     func vehicle(named name: String) -> VehicleInfo? { vehicles.first { $0.name.lowercased() == name.lowercased() } }
 
     /// The game's name hash: CRC-32 (reflected, start 0, no final inversion) of the lower-case name.
-    static func hash(_ name: String) -> UInt32 {
+    static func hash(_ name: String) -> UInt32 { crc32(name.lowercased().utf8) }
+
+    /// The same CRC-32 is the story save's checksum (offset 0, over every byte after it).
+    private static let crcTable: [UInt32] = (0..<256).map { i -> UInt32 in
+        var c = UInt32(i)
+        for _ in 0..<8 { c = c & 1 != 0 ? (c >> 1) ^ 0xEDB88320 : c >> 1 }
+        return c
+    }
+    static func crc32<S: Sequence>(_ bytes: S) -> UInt32 where S.Element == UInt8 {
         var c: UInt32 = 0
-        for byte in name.lowercased().utf8 {
-            c ^= UInt32(byte)
-            for _ in 0..<8 { c = c & 1 != 0 ? (c >> 1) ^ 0xEDB88320 : c >> 1 }
-        }
+        for byte in bytes { c = crcTable[Int((c ^ UInt32(byte)) & 0xFF)] ^ (c >> 8) }
         return c
     }
 }

@@ -49,6 +49,40 @@ Every save keeps the previous file next to it, as `game.dat.<date>-<time>.bak`
 or `3_MPStorage.<date>-<time>.bak`. **Restore backup…** puts one of them back
 (and keeps the file you had as another backup).
 
+The editor also copies every save **as soon as it opens it**, and again
+before it saves, repairs or restores, into its own folder (one folder per save,
+with the game's list entry for it): on Windows
+`%LOCALAPPDATA%\SaintsRebornMpEditor\Backups`, on the Mac
+`~/Library/Application Support/Saints Reborn Save Editor/Backups`. A copy is only made when the file changed, and
+these copies are outside the game's folders, so they are still there if the
+game deletes a save. **Restore backup…** opens in that folder.
+
+## Damaged saves
+
+**Check saves…** checks every save the way the game
+does, and **Repair** fixes what can be fixed:
+
+- A story save starts with a checksum of the rest of the file. If it does not
+  match, the game says the save is corrupt and offers to delete it. Versions
+  of this editor before this one did not write the checksum, so saves they
+  changed show as damaged. Repair writes the right checksum, which is all
+  those saves need.
+- A save whose contents are really broken is replaced by its newest backup
+  that the game would load.
+- The game also calls a save damaged when its folder was renamed: the name
+  must stay `23@<mission>@<number>@<date>@<time>`. Put the old name back.
+
+Opening a damaged save offers the same repair.
+
+## Outfits
+
+On the **Wardrobe** screen of a story save, and on the online character's
+screen (the **Outfit** menu on the Mac): **Save outfit to file…** keeps what the character wears in
+`Documents/Saints Reborn Outfits` (the same files work on both), **Load outfit from file…** puts one on, and
+**Copy outfit to other saves…** writes it into the story saves and online
+characters you tick. The online character only keeps clothing that
+multiplayer sells, so other pieces are left off it.
+
 No online character in the list? In the game, open MULTIPLAYER, change
 something in the wardrobe and save, then start the editor again.
 
@@ -65,6 +99,9 @@ Both are big-endian.
 
 | Story save | What |
 |---|---|
+| `0x0000` | checksum: CRC-32 (reflected, start 0, no final inversion) of every byte from `0x0004` to the end |
+| `0x0004` | version, 23 |
+| `0x0088` | where the player starts: the name hash of the save spot last saved at |
 | `0x0090` | respect |
 | `0x00A0` | cash in cents |
 | `0x0144` | carried weapons: count, pointer to 16-byte records (name, count, loaded, spare) |
@@ -85,6 +122,7 @@ glass 1, larger ones for the engine and doors), `0x268` damage flags, `0x2A4`
 the number of dents, then 24-byte dents to the end.
 | `0x6E90` | neighbourhoods: count, pointer to 12-byte records (name, owner, flags) |
 | `0x6F8C` | crib weapon cache: count, pointer to 8-byte records (name hash, flags) |
+| `0x6FF4` | unlocked cheats: size in bytes, then (`0x6FF8`) a pointer to their name hashes; the game writes this list last |
 
 | Online character | What |
 |---|---|
@@ -103,6 +141,15 @@ between the shirts and the underwear and has not been seen in a save yet; if a
 coat put on with the editor is gone when the game loads, that is why. Belts,
 piercings, tattoos and skin are left as they are, because their numbers are
 not known yet.
+
+### Where the game starts
+
+**Start at** on the Player screen is the save spot the game puts you at when
+the save loads: one of the four cribs, the church, or a save point in a
+district. The list is read from the game's map files (every trigger of the
+kind "save spot" in a district's `.cts` file), and the save keeps the name hash
+of the one chosen. Pick one you have unlocked; cribs open up as the story goes
+on, and the editor does not know which ones you own yet.
 
 ### The garage
 

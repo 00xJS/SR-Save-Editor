@@ -15,7 +15,7 @@ cat > "$WORK/check.csproj" <<CSPROJ
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net48</TargetFramework><LangVersion>5</LangVersion>
     <AssemblyName>MpCharacterEditor</AssemblyName><EnableDefaultCompileItems>false</EnableDefaultCompileItems><GenerateAssemblyInfo>false</GenerateAssemblyInfo></PropertyGroup>
-  <ItemGroup><Compile Include="$PWD/MpCharacterEditor.cs" /><Compile Include="$PWD/Core.cs" />
+  <ItemGroup><Compile Include="$PWD/MpCharacterEditor.cs" /><Compile Include="$PWD/Core.cs" /><Compile Include="$PWD/SaveHealth.cs" />
     <Reference Include="System.Windows.Forms" /><Reference Include="System.Drawing" /><Reference Include="System.Xml" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" /></ItemGroup>
 </Project>
@@ -54,3 +54,13 @@ if [ -f "$MP" ]; then
   cmp "$WORK/mac/game/3_MPStorage" "$WORK/win/game/3_MPStorage"
 fi
 echo "ok: both editors wrote identical saves"
+
+# The save checker: both versions give the same verdict on every save tests/collect-saves.sh gathered.
+if [ -s tests/saves/manifest.tsv ]; then
+  cp -r tests/saves "$WORK/corpus"
+  ./mac/build/sredit check "$WORK/corpus" > "$WORK/mac-check.txt" || true
+  "$WINE" "$EXE" --check-saves "Z:$WORK/win-check.txt" "Z:$WORK/corpus" 2>/dev/null || true
+  verdicts() { tr '\\' / < "$1" | tr -d '\r' | sed -nE 's#^(story|online) .*/corpus/(.*): (.*)$#\1 \2: \3#p' | sort; }
+  diff <(verdicts "$WORK/mac-check.txt") <(verdicts "$WORK/win-check.txt")
+  echo "ok: both checkers agree on $(verdicts "$WORK/mac-check.txt" | wc -l | tr -d ' ') saves"
+fi

@@ -197,6 +197,7 @@ namespace MpCharacterEditor
                 Be.Put(data, OwnedAt + 12 * k, (uint)owned[k].Item);
                 Be.Put(data, OwnedAt + 12 * k + 4, (uint)owned[k].Variant);
             }
+            SaveBackups.Keep(Path, "before saving");
             string backup = StorySave.Backup(Path);
             File.WriteAllBytes(Path, data);
             return backup;
@@ -469,6 +470,10 @@ namespace MpCharacterEditor
             choiceList.View = View.Details; choiceList.FullRowSelect = true; choiceList.HideSelection = false; choiceList.MultiSelect = false;
             choiceList.Columns.Add("Item", 230); choiceList.Columns.Add("Colour / style", 230); choiceList.Columns.Add("Category", 120);
             choiceList.Dock = DockStyle.Fill;
+            // Refilled once the window exists - after OnHandleCreated has finished, since changing
+            // the items inside it crashes .NET's ListView.
+            choiceList.HandleCreated += delegate { BeginInvoke((Action)ShowChoices); };
+            slotList.HandleCreated += delegate { BeginInvoke((Action)Refresh); };
             choiceList.ItemSelectionChanged += delegate(object o, ListViewItemSelectionChangedEventArgs e)
             {
                 if (filling || !e.IsSelected) return;
@@ -499,7 +504,7 @@ namespace MpCharacterEditor
             {
                 WornItem w = WardrobeTables.WornIn(outfit, (int)row.Tag);
                 row.SubItems[1].Text = w == null ? "" : tables.Title(w) + (tables.Style(w).Length > 0 ? " - " + tables.Style(w) : "");
-                row.Selected = (int)row.Tag == slot;
+                if (slotList.IsHandleCreated) row.Selected = (int)row.Tag == slot;
             }
             int others = 0;
             foreach (WornItem w in outfit) if (WardrobeTables.Slot(w.Slot) == null) others++;
@@ -531,6 +536,10 @@ namespace MpCharacterEditor
             filling = true;
             choiceList.BeginUpdate();
             choiceList.Items.Clear();
+            // Selecting a row before the list has its window makes .NET keep a stale "saved
+            // selection" after the next Clear(), and it crashes in OnHandleCreated when the tab is
+            // first shown. So the row is selected only once the window exists (HandleCreated refills).
+            ListViewItem chosen = null;
             foreach (WardrobeItem item in tables.Choices(slot))
             {
                 List<WearOption> options = item.OptionsIn(slot);
@@ -542,12 +551,12 @@ namespace MpCharacterEditor
                     if (q.Length > 0 && (item.Title + " " + v.Title + " " + item.Category).ToLowerInvariant().IndexOf(q) < 0) continue;
                     ListViewItem row = new ListViewItem(new string[] { item.Title, v.Title, item.Category });
                     row.Tag = new WornItem(item.Id, v.Id, slot, options[0].Mesh);
-                    row.Selected = now != null && now.Item == item.Id && now.Variant == v.Id;
+                    if (now != null && now.Item == item.Id && now.Variant == v.Id) chosen = row;
                     choiceList.Items.Add(row);
                 }
             }
             choiceList.EndUpdate();
-            if (choiceList.SelectedItems.Count > 0) choiceList.EnsureVisible(choiceList.SelectedItems[0].Index);
+            if (chosen != null && choiceList.IsHandleCreated) { chosen.Selected = true; choiceList.EnsureVisible(chosen.Index); }
             filling = false;
         }
     }
@@ -605,6 +614,7 @@ namespace MpCharacterEditor
                 Set(p, e.NewValue == CheckState.Checked);
                 changed();
             };
+            list.HandleCreated += delegate { BeginInvoke((Action)Fill); };   // after OnHandleCreated, see WardrobePanel
             Controls.Add(list); Controls.Add(filter);
         }
 
@@ -653,8 +663,11 @@ namespace MpCharacterEditor
                 foreach (WardrobeVariant v in item.Variants) if (v.Id == p.Variant) style = v.Title;
                 if (q.Length > 0 && (item.Title + " " + style + " " + item.Category).ToLowerInvariant().IndexOf(q) < 0) continue;
                 ListViewItem row = new ListViewItem(new string[] { item.Title, style, item.Category, locked.Contains(p.Key) ? "wearing" : "" });
-                row.Tag = p; row.Checked = has;
+                row.Tag = p;
                 list.Items.Add(row);
+                // A tick set before the list has its window crashes .NET's ListView when the window
+                // is made (or remade); the list is refilled on HandleCreated instead.
+                if (list.IsHandleCreated) row.Checked = has;
             }
             list.EndUpdate();
             filling = false;
@@ -676,6 +689,9 @@ namespace MpCharacterEditor
         readonly ComboBox modelBox = new ComboBox(), partBox = new ComboBox(), paletteBox = new ComboBox(), colourBox = new ComboBox();
         readonly Label garageNote = new Label(), optionTitle = new Label();
         readonly Button stockButton = new Button();
+        // The variant row of the garage: variant, one box per part group, the material bytes.
+        readonly FlowLayoutPanel variantRow = Row();
+        readonly TextBox variantBytes = new TextBox();
         readonly TabControl wardrobeTabs = new TabControl();
 
         // Story save.
@@ -690,6 +706,7 @@ namespace MpCharacterEditor
         readonly ComboBox storyBox = new ComboBox(), ownerBox = new ComboBox();
         readonly Button storySave = new Button(), storyReload = new Button(), storyFolder = new Button(), storyRestore = new Button();
         readonly NumericUpDown storyCash = new NumericUpDown(), respectBox = new NumericUpDown();
+        readonly ComboBox startBox = new ComboBox();
         readonly NumericUpDown loadedBox = new NumericUpDown(), spareBox = new NumericUpDown();
         readonly Label respectNote = new Label(), ammoTitle = new Label(), stashNote = new Label(), hoodNote = new Label();
         readonly Button fillAmmo = new Button();
@@ -763,6 +780,7 @@ namespace MpCharacterEditor
 
             SetUpList(itemList, true, "Item", 250, "Colour / style", 250, "Category", 110, "", 110);
             itemList.ItemCheck += ItemCheck;
+            itemList.HandleCreated += delegate { BeginInvoke((Action)FillItems); };
 
             TabControl tabs = new TabControl();
             tabs.Dock = DockStyle.Fill;
@@ -855,6 +873,7 @@ namespace MpCharacterEditor
                 onlineWardrobe = new WardrobePanel(wardrobe, sold, delegate { WornChanged(); });
                 wardrobeTabs.TabPages.Add(Page("Wearing", storyWardrobe)); wardrobeTabs.TabPages.Add(Page("Clothing owned", storyOwned));
                 wornPage.Controls.Add(onlineWardrobe);
+                wornPage.Controls.Add(OutfitRow(true));
                 Game.Remember(dist);
             }
             catch (Exception ex)
@@ -924,7 +943,9 @@ namespace MpCharacterEditor
             storyFolder.Click += delegate { if (ChooseFolder()) LoadGame(); };
             storyRestore.Text = "Restore backup..."; storyRestore.AutoSize = true;
             storyRestore.Click += delegate { RestoreStory(); };
-            top.Controls.Add(storySave); top.Controls.Add(storyReload); top.Controls.Add(storyRestore); top.Controls.Add(storyFolder);
+            Button checkSaves = new Button(); checkSaves.Text = "Check saves..."; checkSaves.AutoSize = true;
+            checkSaves.Click += delegate { CheckAllSaves(); };
+            top.Controls.Add(storySave); top.Controls.Add(storyReload); top.Controls.Add(storyRestore); top.Controls.Add(checkSaves); top.Controls.Add(storyFolder);
 
             // Player
             FlowLayoutPanel player = Row();
@@ -940,7 +961,22 @@ namespace MpCharacterEditor
             respectRow.Controls.Add(respectBox);
             respectNote.AutoSize = true; respectNote.Margin = new Padding(8, 7, 0, 0);
             respectRow.Controls.Add(respectNote);
-            player.Controls.Add(cashRow); player.Controls.Add(respectRow);
+            // Where the player starts: the save spot the game last saved at.
+            FlowLayoutPanel startRow = Row();
+            startRow.Controls.Add(Caption("Start at"));
+            startBox.DropDownStyle = ComboBoxStyle.DropDownList; startBox.Width = 300;
+            startBox.SelectedIndexChanged += delegate
+            {
+                SavePoint p = startBox.SelectedItem as SavePoint;
+                if (filling || story == null || p == null) return;
+                story.StartPoint = p.Hash; StoryChanged();
+            };
+            startRow.Controls.Add(startBox);
+            Label startNote = new Label(); startNote.AutoSize = true; startNote.Margin = new Padding(8, 7, 0, 0);
+            startNote.Text = "Pick a crib or save point you have unlocked.";
+            startNote.ForeColor = SystemColors.GrayText;
+            startRow.Controls.Add(startNote);
+            player.Controls.Add(cashRow); player.Controls.Add(respectRow); player.Controls.Add(startRow);
 
             // Weapons
             FlowLayoutPanel ammo = Row();
@@ -1035,6 +1071,7 @@ namespace MpCharacterEditor
             storyTabs.TabPages.Add(Page("Weapons", Fill(wheel, ammo)));
             wardrobeTabs.Dock = DockStyle.Fill;
             wardrobePage.Controls.Add(wardrobeTabs);
+            wardrobePage.Controls.Add(OutfitRow(false));
             storyTabs.TabPages.Add(wardrobePage);
             storyTabs.TabPages.Add(Page("Garage", BuildGarage()));
             storyTabs.TabPages.Add(Page("Crib weapons", Fill(stashList, stashTop)));
@@ -1062,6 +1099,65 @@ namespace MpCharacterEditor
             return parts.Length >= 5 ? parts[3].Replace('_', '/') + " " + parts[4].Replace('_', ':') : folder;
         }
 
+        // Testing ("--ui-check"): opens every story save and clicks every car, reporting any exception.
+        public string UiCheck()
+        {
+            StringBuilder sb = new StringBuilder();
+            // Give every list its window first, one by one, naming the one that fails.
+            List<Control> all = new List<Control>();
+            Stack<Control> stack = new Stack<Control>(); stack.Push(this);
+            while (stack.Count > 0) { Control c = stack.Pop(); all.Add(c); foreach (Control k in c.Controls) stack.Push(k); }
+            string trace = Path.Combine(Path.GetTempPath(), "ui-check-lists.txt");
+            File.WriteAllText(trace, "");
+            foreach (Control c in all)
+            {
+                ListView lv = c as ListView;
+                if (lv == null) continue;
+                string what = "ListView '" + (lv.Columns.Count > 0 ? lv.Columns[0].Text : "?") + "' (" + lv.Items.Count + " rows, parent " + (lv.Parent == null ? "none" : lv.Parent.GetType().Name) + ")";
+                lv.HandleDestroyed += delegate { File.AppendAllText(trace, DateTime.Now.ToString("HH:mm:ss.fff") + " destroyed " + what + "\r\n" + Environment.StackTrace + "\r\n"); };
+                lv.HandleCreated += delegate { File.AppendAllText(trace, DateTime.Now.ToString("HH:mm:ss.fff") + " created " + what + " (" + lv.Items.Count + " rows)\r\n"); };
+                try { IntPtr x = lv.Handle; sb.AppendLine(what + " ok"); }
+                catch (Exception ex) { sb.AppendLine(what + " EXCEPTION: " + ex.Message); }
+            }
+            IntPtr h = garageList.Handle; h = optionList.Handle; h = variantRow.Handle;   // the garage tab is not shown: make the controls real
+            // Visit every tab the way a click would, so each control gets its window.
+            for (int s = 0; s < sections.TabPages.Count; s++)
+            {
+                try { sections.SelectedIndex = s; Application.DoEvents(); sb.AppendLine("section " + s + " " + sections.TabPages[s].Text + " ok"); }
+                catch (Exception ex) { sb.AppendLine("section " + s + " EXCEPTION: " + ex); }
+                if (s != 0) continue;
+                for (int t = 0; t < storyTabs.TabPages.Count; t++)
+                {
+                    try { storyTabs.SelectedIndex = t; Application.DoEvents(); sb.AppendLine("  story tab " + t + " " + storyTabs.TabPages[t].Text + " ok"); }
+                    catch (Exception ex) { sb.AppendLine("  story tab " + t + " " + storyTabs.TabPages[t].Text + " EXCEPTION: " + ex); }
+                    for (int w = 0; storyTabs.TabPages[t] == wardrobePage && w < wardrobeTabs.TabPages.Count; w++)
+                    {
+                        try { wardrobeTabs.SelectedIndex = w; Application.DoEvents(); sb.AppendLine("    wardrobe tab " + w + " ok"); }
+                        catch (Exception ex) { sb.AppendLine("    wardrobe tab " + w + " EXCEPTION: " + ex); }
+                    }
+                }
+            }
+            for (int i = 0; i < storyBox.Items.Count; i++)
+            {
+                try
+                {
+                    storyBox.SelectedIndex = i; LoadStory();
+                    sb.AppendLine("save " + storyBox.Items[i] + ": " + (story == null ? "not loaded" : story.Vehicles.Count + " cars, start at '" + startBox.Text + "' of " + startBox.Items.Count));
+                    if (story == null) continue;
+                    for (int k = 0; k < garageList.Items.Count; k++)
+                    {
+                        garageList.Items[k].Selected = true;
+                        ShowOptions();
+                        sb.AppendLine("  car " + garageList.Items[k].SubItems[1].Text + ": variant row " + (variantRow.Controls.Count > 0 ? variantRow.Controls.Count + " controls, bytes '" + variantBytes.Text + "'" : "hidden") + ", option rows " + optionList.Items.Count + ", selected " + garageList.SelectedIndices.Count
+                            + ", section " + story.Vehicles[k].SectionLength + " bytes, variants " + game.Variants.Variants(game.Vehicle(story.Vehicles[k].Hash).Name).Count + " " + game.Variants.LastError);
+                        for (int o = 0; o < optionList.Items.Count; o++) { optionList.Items[o].Selected = true; ShowPicker(); }
+                    }
+                }
+                catch (Exception ex) { sb.AppendLine("EXCEPTION: " + ex); }
+            }
+            return sb.ToString();
+        }
+
         void LoadStoryList()
         {
             storyFiles.Clear();
@@ -1084,7 +1180,10 @@ namespace MpCharacterEditor
         void LoadStory()
         {
             if (storyBox.SelectedIndex < 0) return;
-            try { story = new StorySave(storyFiles[storyBox.SelectedIndex]); }
+            string file = storyFiles[storyBox.SelectedIndex];
+            SaveBackups.Keep(file, "opened");
+            if (!CheckOnOpen(file)) return;
+            try { story = new StorySave(file); }
             catch (Exception ex)
             {
                 story = null;
@@ -1106,6 +1205,15 @@ namespace MpCharacterEditor
             storyCash.Value = Math.Max(0, Math.Min(storyCash.Maximum, story.Cash));
             respectBox.Value = Math.Min(respectBox.Maximum, story.Respect);
             respectNote.Text = "Next bar at " + story.RespectNeeded + ".";
+            startBox.Items.Clear();
+            if (game != null) foreach (SavePoint p in game.SavePoints) startBox.Items.Add(p);
+            SavePoint start = game == null ? null : game.SavePointOf(story.StartPoint);
+            if (start == null)
+            {
+                start = new SavePoint(); start.Hash = story.StartPoint; start.Title = "Unknown spot (" + story.StartPoint.ToString("x8") + ")";
+                startBox.Items.Insert(0, start);
+            }
+            startBox.SelectedItem = start;
             stashList.Items.Clear();
             foreach (StashWeapon s in story.Stash)
             {
@@ -1191,6 +1299,9 @@ namespace MpCharacterEditor
             optionList.MultiSelect = false;
             optionList.SelectedIndexChanged += delegate { ShowPicker(); };
             Panel lower = Fill(optionList, pick);
+            // The random looks (flashers, light bars, hoods...) of models with a variant table, above the paint row.
+            variantRow.WrapContents = true;
+            lower.Controls.Add(variantRow);
 
             Panel p = new Panel(); p.Dock = DockStyle.Fill;
             p.Controls.Add(lower); p.Controls.Add(garageList); p.Controls.Add(top);
@@ -1225,9 +1336,94 @@ namespace MpCharacterEditor
                 optionTitle.Text = slots.Count > 0 ? info.Title + ": pick a slot" : "The shops don't take a " + info.Title + ".";
             }
             else optionTitle.Text = v == null ? "Click a car for its paint and parts." : "The paint and parts tables were not found (misc2.vpp_xbox2).";
-            if (keep >= 0 && keep < optionList.Items.Count) optionList.Items[keep].Selected = true;
+            if (keep >= 0 && keep < optionList.Items.Count && optionList.IsHandleCreated) optionList.Items[keep].Selected = true;
             optionList.EndUpdate();
             ShowPicker();
+            ShowVariant();
+        }
+
+        // The variant section of the selected car: the variant, a box per part group (with "None"
+        // for a group the game may leave out), and the material bytes as hex for now - the police
+        // unit number is in there, but which byte is which digit is not known yet.
+        void ShowVariant()
+        {
+            GarageVehicle v = SelectedCar();
+            VehicleInfo info = v == null || game == null ? null : game.Vehicle(v.Hash);
+            List<VehicleVariant> variants = info == null ? new List<VehicleVariant>() : game.Variants.Variants(info.Name);
+            filling = true;
+            variantRow.SuspendLayout();
+            variantRow.Controls.Clear();
+            bool show = variants.Count > 0 && v.SectionLength > 0;
+            variantRow.Visible = show;
+            if (show)
+            {
+                int which = Math.Min(v.SectionByte(0), variants.Count - 1);
+                VehicleVariant variant = variants[which];
+                variantRow.Controls.Add(Caption("Variant"));
+                ComboBox box = new ComboBox(); box.DropDownStyle = ComboBoxStyle.DropDownList; box.Width = 130;
+                foreach (VehicleVariant x in variants) box.Items.Add(x);
+                box.SelectedIndex = which;
+                box.SelectedIndexChanged += delegate
+                {
+                    if (filling || SelectedCar() == null) return;
+                    SelectedCar().SetSectionByte(0, (byte)box.SelectedIndex); StoryChanged(); ShowVariant();
+                };
+                variantRow.Controls.Add(box);
+                int at = 1;
+                foreach (VariantGroup g in variant.Parts)
+                {
+                    int index = at++;
+                    if (index >= v.SectionLength) break;
+                    variantRow.Controls.Add(Caption(g.Name));
+                    ComboBox pick = new ComboBox(); pick.DropDownStyle = ComboBoxStyle.DropDownList; pick.Width = 120;
+                    foreach (string c in g.Choices) pick.Items.Add(c);
+                    pick.Items.Add("None");
+                    int now = v.SectionByte(index);
+                    if (now > g.Choices.Count) pick.Items.Add("value " + now);
+                    pick.SelectedIndex = Math.Min(now, pick.Items.Count - 1);
+                    pick.SelectedIndexChanged += delegate
+                    {
+                        if (filling || SelectedCar() == null) return;
+                        SelectedCar().SetSectionByte(index, (byte)pick.SelectedIndex); StoryChanged();
+                    };
+                    variantRow.Controls.Add(pick);
+                }
+                at += variant.Materials.Count;   // one pick per material group; the choices are rarely more than one
+                variantRow.Controls.Add(Caption("Material bytes"));
+                variantBytes.Width = 200; variantBytes.Text = v.SectionHex(Math.Min(at, v.SectionLength));
+                int first = at;
+                variantBytes.Tag = first;
+                variantRow.Controls.Add(variantBytes);
+                Button apply = new Button(); apply.Text = "Apply"; apply.AutoSize = true;
+                apply.Click += delegate
+                {
+                    GarageVehicle car = SelectedCar();
+                    if (car == null) return;
+                    string[] parts = variantBytes.Text.Split(new char[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+                    for (int k = 0; k < parts.Length && first + k < car.SectionLength; k++)
+                    {
+                        byte b;
+                        if (byte.TryParse(parts[k], System.Globalization.NumberStyles.HexNumber, null, out b)) car.SetSectionByte(first + k, b);
+                    }
+                    StoryChanged(); ShowVariant();
+                };
+                variantRow.Controls.Add(apply);
+                if (GarageVehicle.HasUnitNumber(info.Name, v.SectionLength))
+                {
+                    variantRow.Controls.Add(Caption("Unit number"));
+                    NumericUpDown unit = new NumericUpDown(); unit.Minimum = 0; unit.Maximum = 99; unit.Width = 50;
+                    unit.Value = v.UnitNumber;
+                    unit.ValueChanged += delegate
+                    {
+                        if (filling || SelectedCar() == null) return;
+                        SelectedCar().UnitNumber = (int)unit.Value; StoryChanged();
+                        filling = true; variantBytes.Text = SelectedCar().SectionHex((int)variantBytes.Tag); filling = false;
+                    };
+                    variantRow.Controls.Add(unit);
+                }
+            }
+            variantRow.ResumeLayout();
+            filling = false;
         }
 
         void ShowPicker()
@@ -1301,7 +1497,7 @@ namespace MpCharacterEditor
                 garageList.Items.Add(new ListViewItem(new string[] { "#" + v.Id, info != null ? info.Title : "Unknown " + v.Hash.ToString("X8"),
                     condition, info != null ? info.Category : "", info != null ? info.Name : "" }));
             }
-            if (selected >= 0 && selected < garageList.Items.Count) garageList.Items[selected].Selected = true;
+            if (selected >= 0 && selected < garageList.Items.Count && garageList.IsHandleCreated) garageList.Items[selected].Selected = true;
             garageList.EndUpdate();
             garageNote.Text = story.Vehicles.Count + " in the garage";
             ShowOptions();
@@ -1340,7 +1536,7 @@ namespace MpCharacterEditor
                 if (h.Owner == 0) saints++;
                 hoodList.Items.Add(new ListViewItem(new string[] { h.Name, h.Owner < StorySave.Gangs.Length ? StorySave.Gangs[h.Owner] : "?" }));
             }
-            foreach (int i in selected) if (i < hoodList.Items.Count) hoodList.Items[i].Selected = true;
+            foreach (int i in selected) if (i < hoodList.Items.Count && hoodList.IsHandleCreated) hoodList.Items[i].Selected = true;
             hoodList.EndUpdate();
             hoodNote.Text = saints + " of " + story.Hoods.Count + " held by the Saints";
         }
@@ -1481,6 +1677,15 @@ namespace MpCharacterEditor
             menu.Show(Cursor.Position);
         }
 
+        // The file dialog for a backup opens in the editor's backup folder for that save, with the
+        // save's own folder (the older backups next to it) in the list on the left.
+        static void StartInBackups(FileDialog dlg, string save)
+        {
+            string mine = SaveBackups.FolderFor(save), here = Path.GetDirectoryName(save);
+            dlg.InitialDirectory = Directory.Exists(mine) ? mine : here;
+            try { dlg.CustomPlaces.Add(here); if (Directory.Exists(mine)) dlg.CustomPlaces.Add(mine); } catch (Exception) { }
+        }
+
         // Puts an earlier copy of the save back; the current one is kept as a backup first.
         void RestoreStory()
         {
@@ -1488,14 +1693,17 @@ namespace MpCharacterEditor
             using (OpenFileDialog dlg = new OpenFileDialog())
             {
                 dlg.Title = "Choose the backup to restore";
-                dlg.InitialDirectory = Path.GetDirectoryName(story.Path);
+                StartInBackups(dlg, story.Path);
                 dlg.Filter = "Save backups (game.dat.*)|game.dat.*|All files (*.*)|*.*";
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 try
                 {
                     new StorySave(dlg.FileName);   // checks that it is a save
+                    SaveBackups.Keep(story.Path, "before restoring");
                     string keep = StorySave.Backup(story.Path);
                     File.Copy(dlg.FileName, story.Path, true);
+                    // A backup written by an older version of the editor may carry a wrong checksum.
+                    if (SaveCheck.Check(story.Path).ChecksumOnly) SaveCheck.Repair(story.Path);
                     int selected = storyBox.SelectedIndex;
                     LoadStory();
                     MessageBox.Show(this, "Restored.\n\nThe save you had just now is kept as\n" + Path.GetFileName(keep), Text,
@@ -1540,12 +1748,248 @@ namespace MpCharacterEditor
             }
         }
 
+        // ---- Damaged saves ----
+
+        // Before a save is shown: if the game would call it damaged, say why and offer to repair it.
+        // Returns false when it should not be opened.
+        bool CheckOnOpen(string file)
+        {
+            if (Quiet) return true;
+            SaveReport r = SaveCheck.Check(file);
+            if (r.Worst < Health.Damaged) return true;
+            StringBuilder why = new StringBuilder();
+            foreach (Finding f in r.Findings) if (f.Level >= Health.Warning) why.AppendLine("- " + f.Text);
+            string good = r.DataDamaged && !r.ChecksumOnly ? SaveCheck.GoodBackup(file) : null;
+            if (!r.ChecksumOnly && good == null)
+            {
+                MessageBox.Show(this, "The game will say this save is damaged:\n\n" + why +
+                    (r.DataDamaged ? "\nNo backup the game would load was found, so it can't be repaired here." : ""),
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return true;   // opened as it is; the loader says if it can't be read
+            }
+            string how = r.ChecksumOnly ? "Repair writes the right checksum; nothing else in the save changes."
+                : "Repair puts back the newest backup the game would load:\n" + Path.GetFileName(good) + " (" + File.GetLastWriteTime(good).ToString("g") + ")";
+            if (MessageBox.Show(this, "The game will say this save is damaged:\n\n" + why + "\n" + how +
+                    "\n\nRepair it now? The file as it is now is kept as a backup.", Text,
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes && GameClosed())
+            {
+                try { MessageBox.Show(this, "Repaired: " + SaveCheck.Repair(file) + ".", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); }
+                catch (Exception ex) { MessageBox.Show(this, "The save could not be repaired.\n\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            }
+            return true;
+        }
+
+        // Every save in the game folder with what the game would make of it, and a way to repair them.
+        void CheckAllSaves()
+        {
+            if (dist == null) return;
+            Form f = new Form();
+            f.Text = "Check saves"; f.Font = Font; f.ClientSize = new Size(820, 420); f.StartPosition = FormStartPosition.CenterParent;
+            ListView list = new ListView();
+            SetUpList(list, false, "Save", 300, "Kind", 60, "Condition", 160, "What was found", 900);
+            Label help = new Label(); help.Dock = DockStyle.Top; help.Height = 34; help.Padding = new Padding(6, 6, 6, 0);
+            help.Text = "What the game checks: the checksum at the start of a story save, its version, and the save folder's name. " +
+                "Every save the editor opens is also backed up to " + SaveBackups.Root + ".";
+            FlowLayoutPanel buttons = Row(); buttons.Dock = DockStyle.Bottom;
+            Button repair = new Button(), repairAll = new Button(), open = new Button(), close = new Button();
+            repair.Text = "Repair selected"; repairAll.Text = "Repair all"; open.Text = "Open backups folder"; close.Text = "Close";
+            foreach (Button b in new Button[] { repair, repairAll, open, close }) { b.AutoSize = true; buttons.Controls.Add(b); }
+            List<string> files = new List<string>(Game.StorySaves(dist));
+            foreach (string p in Game.Players(dist)) files.Add(Game.CharacterFile(dist, p));
+            Action fill = delegate
+            {
+                list.Items.Clear();
+                foreach (string file in files)
+                {
+                    SaveReport r = SaveCheck.Check(file);
+                    StringBuilder what = new StringBuilder();
+                    foreach (Finding x in r.Findings) { if (what.Length > 0) what.Append("  "); what.Append(x.Text); }
+                    string title = r.Kind == "story" ? SaveTitle(file) : "Online: " + Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(file)));
+                    ListViewItem row = new ListViewItem(new string[] { title, r.Kind, r.Summary, what.Length > 0 ? what.ToString() : "nothing wrong" });
+                    row.Tag = r;
+                    if (r.Worst == Health.Damaged) row.ForeColor = Color.Firebrick;
+                    else if (r.Worst == Health.Warning) row.ForeColor = Color.DarkGoldenrod;
+                    list.Items.Add(row);
+                }
+            };
+            Action<IEnumerable<ListViewItem>> fix = delegate(IEnumerable<ListViewItem> rows)
+            {
+                if (!GameClosed()) return;
+                StringBuilder done = new StringBuilder();
+                foreach (ListViewItem row in rows)
+                {
+                    SaveReport r = (SaveReport)row.Tag;
+                    if (!r.DataDamaged) continue;
+                    string result;
+                    try { result = SaveCheck.Repair(r.Path) ?? "no backup the game would load was found"; }
+                    catch (Exception ex) { result = "failed: " + ex.Message; }
+                    done.AppendLine(row.Text + ": " + result);
+                }
+                fill();
+                MessageBox.Show(f, done.Length > 0 ? done.ToString() : "Nothing to repair. (A changed folder name has to be put back by hand.)", Text);
+                if (story != null) LoadStory();
+            };
+            repair.Click += delegate { List<ListViewItem> rows = new List<ListViewItem>(); foreach (ListViewItem i in list.SelectedItems) rows.Add(i); fix(rows); };
+            repairAll.Click += delegate { List<ListViewItem> rows = new List<ListViewItem>(); foreach (ListViewItem i in list.Items) rows.Add(i); fix(rows); };
+            open.Click += delegate { Directory.CreateDirectory(SaveBackups.Root); Process.Start("explorer.exe", "\"" + SaveBackups.Root + "\""); };
+            close.Click += delegate { f.Close(); };
+            f.Controls.Add(list); f.Controls.Add(help); f.Controls.Add(buttons);
+            f.Shown += delegate { fill(); };
+            f.ShowDialog(this);
+            f.Dispose();
+        }
+
+        // ---- Outfits: keep one in a file, or put it on other saves and the online character ----
+
+        FlowLayoutPanel OutfitRow(bool online)
+        {
+            FlowLayoutPanel row = Row();
+            Button export = new Button(), import = new Button(), copy = new Button();
+            export.Text = "Save outfit to file..."; import.Text = "Load outfit from file..."; copy.Text = "Copy outfit to other saves...";
+            foreach (Button b in new Button[] { export, import, copy }) { b.AutoSize = true; row.Controls.Add(b); }
+            export.Click += delegate { ExportOutfit(online); };
+            import.Click += delegate { ImportOutfit(online); };
+            copy.Click += delegate { CopyOutfit(online); };
+            return row;
+        }
+        List<WornItem> CurrentOutfit(bool online)
+        {
+            if (online) return character == null ? null : character.Outfit;
+            return story == null ? null : story.Outfit;
+        }
+        string CurrentName(bool online)
+        {
+            if (online) return character == null ? "" : "online character " + playerBox.SelectedItem;
+            return story == null ? "" : "story save " + storyBox.SelectedItem;
+        }
+        static string FileSafe(string s) { foreach (char c in Path.GetInvalidFileNameChars()) s = s.Replace(c, '-'); return s; }
+
+        void ExportOutfit(bool online)
+        {
+            List<WornItem> outfit = CurrentOutfit(online);
+            if (outfit == null) return;
+            Directory.CreateDirectory(OutfitFile.Folder);
+            using (SaveFileDialog dlg = new SaveFileDialog())
+            {
+                dlg.Title = "Save the outfit"; dlg.InitialDirectory = OutfitFile.Folder;
+                dlg.Filter = "Outfits (*" + OutfitFile.Extension + ")|*" + OutfitFile.Extension;
+                dlg.FileName = FileSafe((online ? "Online " + playerBox.SelectedItem : "Story " + storyBox.SelectedItem)) + OutfitFile.Extension;
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                try { OutfitFile.Write(dlg.FileName, outfit, CurrentName(online)); }
+                catch (Exception ex) { MessageBox.Show(this, "The outfit could not be saved.\n\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            }
+        }
+
+        void ImportOutfit(bool online)
+        {
+            if (CurrentOutfit(online) == null) return;
+            using (OpenFileDialog dlg = new OpenFileDialog())
+            {
+                dlg.Title = "Choose an outfit"; dlg.InitialDirectory = Directory.Exists(OutfitFile.Folder) ? OutfitFile.Folder : "";
+                dlg.Filter = "Outfits (*" + OutfitFile.Extension + ")|*" + OutfitFile.Extension;
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                try { PutOn(OutfitFile.Read(dlg.FileName), online); }
+                catch (Exception ex) { MessageBox.Show(this, "The outfit could not be read.\n\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            }
+        }
+
+        // Puts an outfit on the save that is open; it is written when Save is pressed.
+        void PutOn(List<WornItem> outfit, bool online)
+        {
+            int skipped;
+            List<WornItem> use = OutfitFor(outfit, online, out skipped);
+            List<WornItem> target = CurrentOutfit(online);
+            target.Clear(); target.AddRange(use);
+            if (online) { onlineWardrobe.Show(character.Outfit); WornChanged(); }
+            else { storyWardrobe.Show(story.Outfit); storyOwned.Show(story.Owned, story.Outfit); StoryChanged(); }
+            MessageBox.Show(this, "The outfit is on. Press Save to keep it." +
+                (skipped > 0 ? "\n\n" + skipped + " piece(s) are not sold in multiplayer, so they were left off the online character." : ""),
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        // The online character only keeps clothing that multiplayer sells.
+        List<WornItem> OutfitFor(List<WornItem> outfit, bool online, out int skipped)
+        {
+            skipped = 0;
+            List<WornItem> r = new List<WornItem>();
+            HashSet<long> sold = new HashSet<long>();
+            if (online && tables != null) foreach (Pair p in tables.Store) sold.Add(p.Key);
+            foreach (WornItem w in outfit)
+            {
+                if (online && wardrobe != null && wardrobe.IsClothing(w.Item) && !sold.Contains(new Pair(w.Item, w.Variant).Key)) { skipped++; continue; }
+                r.Add(new WornItem(w.Item, w.Variant, w.Slot, w.Mesh));
+            }
+            return r;
+        }
+
+        // Writes the outfit that is open into other saves straight away (each keeps a backup).
+        void CopyOutfit(bool online)
+        {
+            List<WornItem> outfit = CurrentOutfit(online);
+            if (outfit == null || dist == null) return;
+            string self = online ? character.Path : story.Path;
+            List<string> targets = new List<string>();
+            CheckedListBox box = new CheckedListBox(); box.Dock = DockStyle.Fill; box.CheckOnClick = true;
+            foreach (string file in Game.StorySaves(dist)) if (file != self) { targets.Add(file); box.Items.Add("Story: " + SaveTitle(file)); }
+            foreach (string p in Game.Players(dist)) { string file = Game.CharacterFile(dist, p); if (file != self) { targets.Add(file); box.Items.Add("Online: " + p); } }
+            if (targets.Count == 0) { MessageBox.Show(this, "There are no other saves to copy to.", Text); return; }
+            Form f = new Form(); f.Text = "Copy outfit to"; f.Font = Font; f.ClientSize = new Size(420, 360); f.StartPosition = FormStartPosition.CenterParent;
+            FlowLayoutPanel buttons = Row(); buttons.Dock = DockStyle.Bottom;
+            Button ok = new Button(), cancel = new Button();
+            ok.Text = "Copy"; cancel.Text = "Cancel"; ok.AutoSize = cancel.AutoSize = true;
+            ok.DialogResult = DialogResult.OK; cancel.DialogResult = DialogResult.Cancel;
+            buttons.Controls.Add(ok); buttons.Controls.Add(cancel);
+            Label l = new Label(); l.Dock = DockStyle.Top; l.Height = 40; l.Padding = new Padding(6, 6, 6, 0);
+            l.Text = "Tick the saves that should wear what " + CurrentName(online) + " wears now. They are written straight away.";
+            f.Controls.Add(box); f.Controls.Add(l); f.Controls.Add(buttons);
+            f.AcceptButton = ok; f.CancelButton = cancel;
+            DialogResult answer = f.ShowDialog(this);
+            List<string> picked = new List<string>();
+            foreach (int i in box.CheckedIndices) picked.Add(targets[i]);
+            f.Dispose();
+            if (answer != DialogResult.OK || picked.Count == 0 || !GameClosed()) return;
+            StringBuilder done = new StringBuilder();
+            foreach (string file in picked)
+            {
+                try { done.AppendLine(Path.GetFileName(Path.GetDirectoryName(file)) + ": " + WearInFile(file, outfit)); }
+                catch (Exception ex) { done.AppendLine(Path.GetFileName(Path.GetDirectoryName(file)) + ": failed, " + ex.Message); }
+            }
+            MessageBox.Show(this, done.ToString(), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        string WearInFile(string file, List<WornItem> outfit)
+        {
+            bool online = !SaveCheck.IsStory(file, File.ReadAllBytes(file));
+            int skipped;
+            List<WornItem> use = OutfitFor(outfit, online, out skipped);
+            SaveBackups.Keep(file, "opened");
+            if (online)
+            {
+                Character c = new Character(file);
+                c.Outfit = use;
+                List<Pair> owned = new List<Pair>(c.Owned);
+                HashSet<long> have = new HashSet<long>();
+                foreach (Pair p in owned) have.Add(p.Key);
+                foreach (WornItem w in use) if (tables.Items.ContainsKey(w.Item) && have.Add(new Pair(w.Item, w.Variant).Key)) owned.Add(new Pair(w.Item, w.Variant));
+                c.Save(c.Cents, owned);
+            }
+            else
+            {
+                StorySave s = new StorySave(file);
+                s.Outfit = use;
+                if (wardrobe != null) s.OwnWorn(wardrobe);
+                s.Save();
+            }
+            return "done" + (skipped > 0 ? " (" + skipped + " piece(s) not sold in multiplayer left off)" : "");
+        }
+
         // ---- Online character ----
 
         void LoadCharacter()
         {
             if (playerBox.SelectedItem == null) return;
-            try { character = new Character(Game.CharacterFile(dist, (string)playerBox.SelectedItem)); }
+            string file = Game.CharacterFile(dist, (string)playerBox.SelectedItem);
+            SaveBackups.Keep(file, "opened");
+            if (!CheckOnOpen(file)) return;
+            try { character = new Character(file); }
             catch (Exception ex)
             {
                 character = null;
@@ -1598,8 +2042,8 @@ namespace MpCharacterEditor
                 if (search.Length > 0 && (title + " " + style + " " + cat).ToLowerInvariant().IndexOf(search) < 0) continue;
                 ListViewItem row = new ListViewItem(new string[] { title, style, cat, worn.Contains(p.Key) ? "wearing" : "" });
                 row.Tag = p;
-                row.Checked = has;
                 itemList.Items.Add(row);
+                if (itemList.IsHandleCreated) row.Checked = has;   // see OwnedPanel.Fill
             }
             itemList.EndUpdate();
             filling = false;
@@ -1677,13 +2121,14 @@ namespace MpCharacterEditor
             using (OpenFileDialog dlg = new OpenFileDialog())
             {
                 dlg.Title = "Choose the backup to restore";
-                dlg.InitialDirectory = Path.GetDirectoryName(character.Path);
+                StartInBackups(dlg, character.Path);
                 dlg.Filter = "Character backups (3_MPStorage.*)|3_MPStorage.*|All files (*.*)|*.*";
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 try
                 {
                     if (new FileInfo(dlg.FileName).Length != Character.Size)
                         throw new InvalidDataException("That file is not a multiplayer character file.");
+                    SaveBackups.Keep(character.Path, "before restoring");
                     string keep = StorySave.Backup(character.Path);
                     File.Copy(dlg.FileName, character.Path, true);
                     LoadCharacter();
@@ -1733,6 +2178,8 @@ namespace MpCharacterEditor
             Tables tables = new Tables(game);
             sb.AppendLine("weapons " + game.Weapons.Count + ", offered " + game.Offered.Count + ", food " + game.Food.Count + ", cheats " + game.Cheats.Count);
             sb.AppendLine("items " + tables.Items.Count + ", sold in multiplayer " + tables.Store.Count);
+            sb.AppendLine("save spots " + game.SavePoints.Count);
+            foreach (SavePoint p in game.SavePoints) sb.AppendLine("  " + p.Hash.ToString("x8") + "  " + p.Title + "  [" + p.Name + "]");
             foreach (string player in Game.Players(dist))
             {
                 Character c = new Character(Game.CharacterFile(dist, player));
@@ -1758,6 +2205,7 @@ namespace MpCharacterEditor
                 string key = args[i].Substring(0, eq), value = args[i].Substring(eq + 1);
                 changed = true;
                 if (key == "cash") s.Cash = decimal.Parse(value);
+                else if (key == "start") s.StartPoint = GameData.Hash(value);   // start=<save spot name>, e.g. saintsrow_$crib_save000
                 else if (key == "food") s.Food = new List<string>(value.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries));
                 else if (key == "stash" || key.StartsWith("stash:"))
                 {
@@ -1786,6 +2234,16 @@ namespace MpCharacterEditor
                         }
                         s.Vehicles[at].SetCustom(slot, int.Parse(p[1]), colors);
                     }
+                }
+                else if (key.StartsWith("unit:"))   // unit:<car>=<number>  (police unit number)
+                {
+                    for (int k = 0; k < s.Vehicles.Count; k++) if (s.Vehicles[k].Id.ToString() == key.Substring(5)) s.Vehicles[k].UnitNumber = int.Parse(value);
+                }
+                else if (key.StartsWith("variant:"))   // variant:<car>=<byte index>:<value>
+                {
+                    string[] p = value.Split(':');
+                    for (int k = 0; k < s.Vehicles.Count; k++)
+                        if (s.Vehicles[k].Id.ToString() == key.Substring(8) && p.Length == 2) s.Vehicles[k].SetSectionByte(int.Parse(p[0]), byte.Parse(p[1]));
                 }
                 else if (key.StartsWith("vehicle:"))
                 {
@@ -1821,6 +2279,8 @@ namespace MpCharacterEditor
                 sb.AppendLine("saved; previous file kept as " + Path.GetFileName(s.Save()));
             }
             sb.AppendLine("cash " + s.Cash.ToString("0.00") + ", respect " + s.Respect);
+            SavePoint startAt = GameNear(args[1]).SavePointOf(s.StartPoint);
+            sb.AppendLine("start " + s.StartPoint.ToString("x8") + (startAt != null ? " " + startAt.Name + " (" + startAt.Title + ")" : " unknown"));
             foreach (CarriedWeapon w in s.Weapons) sb.AppendLine("weapon " + w.Name + " " + w.Clip + "/" + w.Reserve);
             sb.AppendLine("food " + string.Join(",", s.Food.ToArray()));
             sb.AppendLine("outfit " + WardrobeTables.Describe(s.Outfit));
@@ -1828,6 +2288,11 @@ namespace MpCharacterEditor
             StringBuilder g = new StringBuilder();
             foreach (GarageVehicle v in s.Vehicles) g.Append('#').Append(v.Id).Append(' ').Append(v.Hash.ToString("x8")).Append(' ');
             sb.AppendLine("garage " + g);
+            foreach (GarageVehicle v in s.Vehicles)
+            {
+                VehicleInfo info = GameNear(args[1]).Vehicle(v.Hash);
+                sb.AppendLine("variant #" + v.Id + " " + v.SectionHex(0) + (info != null && GarageVehicle.HasUnitNumber(info.Name, v.SectionLength) ? "  unit " + v.UnitNumber.ToString("00") : ""));
+            }
             int unlocked = 0;
             foreach (StashWeapon w in s.Stash) if (w.Unlocked) unlocked++;
             sb.AppendLine("stash " + unlocked + "/" + s.Stash.Count + ", homies " + s.Homies.Count + ", neighbourhoods " + s.Hoods.Count);
@@ -1894,6 +2359,76 @@ namespace MpCharacterEditor
             return 0;
         }
 
+        // "--check-saves <report file> <file or folder>..." checks every save found; "--repair-saves"
+        // repairs the damaged ones too. Exit code 1 when a save is (still) damaged.
+        static int CheckSaves(string[] args)
+        {
+            bool repair = args[0] == "--repair-saves";
+            List<string> files = new List<string>();
+            for (int i = 2; i < args.Length; i++)
+            {
+                if (File.Exists(args[i])) { files.Add(args[i]); continue; }
+                if (!Directory.Exists(args[i])) continue;
+                foreach (string f in Directory.GetFiles(args[i], "*", SearchOption.AllDirectories))
+                {
+                    string n = Path.GetFileName(f);
+                    if (n == "game.dat" || n.StartsWith("game.dat.") || n.StartsWith("3_MPStorage")) files.Add(f);
+                }
+            }
+            files.Sort(StringComparer.Ordinal);
+            StringBuilder sb = new StringBuilder();
+            int damaged = 0;
+            foreach (string f in files)
+            {
+                SaveReport r = SaveCheck.Check(f);
+                if (repair && r.DataDamaged)
+                {
+                    string done = SaveCheck.Repair(f);
+                    sb.AppendLine("repair " + f + ": " + (done ?? "no good backup"));
+                    r = SaveCheck.Check(f);
+                }
+                if (r.Worst == Health.Damaged) damaged++;
+                sb.Append(r);
+            }
+            sb.AppendLine(files.Count + " saves, " + damaged + " damaged");
+            File.WriteAllText(args[1], sb.ToString());
+            return damaged > 0 ? 1 : 0;
+        }
+
+        // "--outfit-apply <outfit file> <game.dat or 3_MPStorage>...": puts the outfit on each save.
+        static int ApplyOutfit(string[] args)
+        {
+            List<WornItem> outfit = OutfitFile.Read(args[1]);
+            for (int i = 2; i < args.Length; i++)
+            {
+                string file = args[i];
+                GameData game = GameNear(file);
+                if (cliWardrobe == null) cliWardrobe = new WardrobeTables(game);
+                List<WornItem> use = new List<WornItem>();
+                foreach (WornItem w in outfit) use.Add(new WornItem(w.Item, w.Variant, w.Slot, w.Mesh));
+                if (SaveCheck.IsStory(file, File.ReadAllBytes(file)))
+                {
+                    StorySave s = new StorySave(file);
+                    s.Outfit = use; s.OwnWorn(cliWardrobe); s.Save();
+                }
+                else
+                {
+                    Character c = new Character(file);
+                    Tables t = new Tables(game);
+                    HashSet<long> sold = new HashSet<long>();
+                    foreach (Pair p in t.Store) sold.Add(p.Key);
+                    use.RemoveAll(delegate(WornItem w) { return cliWardrobe.IsClothing(w.Item) && !sold.Contains(new Pair(w.Item, w.Variant).Key); });
+                    c.Outfit = use;
+                    List<Pair> owned = new List<Pair>(c.Owned);
+                    HashSet<long> have = new HashSet<long>();
+                    foreach (Pair p in owned) have.Add(p.Key);
+                    foreach (WornItem w in use) if (t.Items.ContainsKey(w.Item) && have.Add(new Pair(w.Item, w.Variant).Key)) owned.Add(new Pair(w.Item, w.Variant));
+                    c.Save(c.Cents, owned);
+                }
+            }
+            return 0;
+        }
+
         // "--picture <png file> [section] [story tab]": draws the window to a picture without putting
         // it on screen, for testing.
         static int Picture(string png, int section, int storyTab)
@@ -1927,13 +2462,35 @@ namespace MpCharacterEditor
                 c.Save(c.Cents, c.Owned);
                 return 0;
             }
+            if (args.Length >= 3 && (args[0] == "--check-saves" || args[0] == "--repair-saves")) return CheckSaves(args);
+            if (args.Length == 3 && args[0] == "--outfit-export")
+            {
+                // --outfit-export <game.dat or 3_MPStorage> <outfit file>
+                bool story = SaveCheck.IsStory(args[1], File.ReadAllBytes(args[1]));
+                OutfitFile.Write(args[2], story ? new StorySave(args[1]).Outfit : new Character(args[1]).Outfit, args[1]);
+                return 0;
+            }
+            if (args.Length >= 3 && args[0] == "--outfit-apply") return ApplyOutfit(args);
             if (args.Length >= 3 && args[0] == "--story") return Story(args);
             if (args.Length >= 3 && args[0] == "--mp") return Mp(args);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             if (args.Length >= 2 && args[0] == "--picture")
                 return Picture(args[1], args.Length > 2 ? int.Parse(args[2]) : 0, args.Length > 3 ? int.Parse(args[3]) : 0);
+            // An unexpected error is written to %TEMP%\MpCharacterEditor.log and shown, instead of closing the program.
+            string log = Path.Combine(Path.GetTempPath(), "MpCharacterEditor.log");
+            Application.ThreadException += delegate(object sender, System.Threading.ThreadExceptionEventArgs e)
+            {
+                File.AppendAllText(log, DateTime.Now.ToString("HH:mm:ss.fff") + "\r\n" + e.Exception + "\r\n\r\n");
+                MessageBox.Show("Something went wrong (details in " + log + "):\n\n" + e.Exception.Message, "Saints Reborn - Save Editor", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            };
             MainForm main = new MainForm();
+            if (args.Length == 2 && args[0] == "--ui-check")
+            {
+                // Testing: load every save, click every car, write a report, and close.
+                main.Quiet = true;
+                main.Shown += delegate { File.WriteAllText(args[1], main.UiCheck()); main.Close(); };
+            }
             if (args.Length == 3 && args[0] == "--tab")
             {
                 // Testing: open on a given tab.

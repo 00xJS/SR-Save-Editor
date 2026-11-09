@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+Windows.
+
+- Story save: **Start at**, where the game puts you when the save loads (a
+  crib, the church, or a district save point), from the game's own list.
+- Garage: the random looks of a model (variant, flashers, light bars, hoods
+  and so on) and the police unit number.
+- Fixed: an error when opening the wardrobe for the first time.
+- Fixed (Mac and Windows): saves changed by the editor showed as damaged in
+  the game, because the checksum at the start of the file was not updated.
+- Fixed (Mac and Windows): changing weapons, food or the garage wiped the
+  story save's unlocked cheats.
+- Mac and Windows: a backup of every save as soon as it is opened, in the
+  editor's own folder; **Check saves…** and outfit files on both.
+- **Check saves…**: what the game would make of each save, and a repair for
+  damaged ones (a wrong checksum, or the newest good backup).
+- Outfits: save one to a file, load it, or copy it to other story saves and
+  the online character.
+- `tests/collect-saves.sh` gathers your saves for testing;
+  `tests/check-saves.sh` runs the checks, repair, edits and outfits on them.
+
 ## 0.3.0
 
 Mac and Windows.
