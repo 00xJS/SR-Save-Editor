@@ -1,4 +1,4 @@
-// Saints Reborn Save Editor for macOS (unofficial). Contains no game data or artwork.
+// Saints Reborn Save Editor for macOS. Contains no game data or artwork.
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers

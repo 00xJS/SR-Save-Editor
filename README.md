@@ -1,4 +1,4 @@
-# Save Editor for Saints Reborn (unofficial)
+# Save Editor for Saints Reborn
 
 Edits your saves in [Saints Reborn](https://github.com/whompay/SaintsReborn),
 on **Mac** or **Windows**. Not made by or connected to the Saints Reborn

@@ -1,4 +1,4 @@
-// Save editor for Saints Reborn (unofficial), Windows version.
+// Save editor for Saints Reborn, Windows version.
 //
 // Story saves (game.dat) are handled in Core.cs. This file has the window and
 // the multiplayer character file the game keeps at
@@ -739,7 +739,7 @@ namespace MpCharacterEditor
 
         public MainForm()
         {
-            Text = "Saints Reborn - Save Editor (unofficial)";
+            Text = "Saints Reborn - Save Editor";
             Font = new Font("Segoe UI", 9f);
             ClientSize = new Size(900, 680);
             MinimumSize = new Size(700, 420);
